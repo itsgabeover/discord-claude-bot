@@ -149,6 +149,8 @@ Skip this if you don't need Drive access — the bot works without it.
    - `CLAUDE_MODEL` — `claude-sonnet-4-6`
    - `GOOGLE_DRIVE_FOLDER_ID` (if using Drive)
    - `BRAVE_SEARCH_API_KEY` (if using web search)
+   - `NOTIFICATIONS_CHANNEL_ID` (if using webhooks — see below)
+   - `GITHUB_WEBHOOK_SECRET` (if using GitHub webhooks)
 
 6. If using Google Drive, go to **Secret Files** and upload your `google-credentials.json` as `./google-credentials.json`
 
@@ -157,6 +159,34 @@ Skip this if you don't need Drive access — the bot works without it.
 8. Click **Create Web Service** — Render will deploy the bot. On first startup it will clone your project repo automatically.
 
 > **Note on Render's free tier:** Free services spin down after 15 minutes of inactivity. The bot will restart on the next Discord message, but there may be a ~30 second delay. Upgrade to the Starter plan ($7/mo) for always-on.
+
+---
+
+## GitHub & Vercel webhook notifications (optional)
+
+When enabled, the bot posts a message in a Discord channel every time someone pushes code, opens a PR, or Vercel finishes a deployment.
+
+### 1. Pick a Discord channel and get its ID
+
+In Discord, enable **Developer Mode** (User Settings → Advanced → Developer Mode), then right-click the channel you want notifications in and choose **Copy Channel ID**. Set that as `NOTIFICATIONS_CHANNEL_ID` in your Render environment.
+
+### 2. Wire up GitHub
+
+1. Go to your project repo on GitHub → **Settings → Webhooks → Add webhook**
+2. **Payload URL:** `https://your-render-service.onrender.com/webhooks/github`
+3. **Content type:** `application/json`
+4. **Secret:** make up a random string, set it as `GITHUB_WEBHOOK_SECRET` in Render
+5. **Events:** choose "Let me select individual events" and tick: **Pushes**, **Pull requests**, **Branch or tag creation**, **Branch or tag deletion**
+6. Save — GitHub will send a ping event to confirm it's working
+
+### 3. Wire up Vercel
+
+1. Go to your Vercel project → **Settings → Webhooks → Add Webhook**
+2. **URL:** `https://your-render-service.onrender.com/webhooks/vercel`
+3. **Events to listen to:** Deployment Created, Deployment Succeeded, Deployment Error
+4. Save
+
+> The bot's Render URL is shown on the Render dashboard under your service. It looks like `https://discord-claude-bot-xxxx.onrender.com`.
 
 ---
 
@@ -205,8 +235,6 @@ cp system-prompt.example.md system-prompt.md
 ```
 
 That's it. No code changes needed. The bot loads the file on startup and uses it as Claude's instructions for every conversation. `system-prompt.md` is gitignored so your project details stay out of the public repo.
-
-A real filled-in example is included as `system-prompt.wublets.md` if you want to see what a good one looks like.
 
 ---
 

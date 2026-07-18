@@ -3,6 +3,7 @@ import { Client, GatewayIntentBits, Partials } from 'discord.js';
 import { handleMessage } from './handlers/message.js';
 import { cloneRepoIfNeeded } from './tools/git.js';
 import { setDiscordClient } from './tools/index.js';
+import { startWebhookServer } from './webhooks/server.js';
 
 // Validate required env vars on startup
 const required = ['DISCORD_TOKEN', 'ANTHROPIC_API_KEY'];
@@ -25,10 +26,12 @@ const client = new Client({
 
 client.once('ready', () => {
   setDiscordClient(client); // give tools access to the Discord client
-  console.log(`✅ Wublets bot is online as ${client.user.tag}`);
+  startWebhookServer(client); // start HTTP server for GitHub/Vercel webhooks
+  console.log(`✅ Bot is online as ${client.user.tag}`);
   console.log(`   Model: ${process.env.CLAUDE_MODEL || 'claude-sonnet-4-6'}`);
   console.log(`   Repo:  ${process.env.REPO_PATH || './repo'}`);
   console.log(`   Drive: ${process.env.GOOGLE_DRIVE_FOLDER_ID ? 'configured' : 'not configured'}`);
+  console.log(`   Webhooks: ${process.env.NOTIFICATIONS_CHANNEL_ID ? 'configured' : 'not configured'}`);
   console.log('   Mention me in Discord to get started!');
 });
 
