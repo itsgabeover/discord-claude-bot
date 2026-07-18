@@ -5,8 +5,10 @@ import { listChannels, sendToChannel } from './discord-send.js';
 import { processImage, inspectImage } from './image.js';
 import { webSearch } from './web.js';
 import { runNpm } from './npm.js';
+import { speakInVoice, leaveVoice } from './voice.js';
 
 export { setDiscordClient } from './discord-send.js';
+export { setVoiceChannel } from './voice.js';
 
 // Tool definitions — sent to Claude so it knows what it can call.
 export const toolDefinitions = [
@@ -202,6 +204,32 @@ export const toolDefinitions = [
       required: ['command'],
     },
   },
+
+  // ── Voice ─────────────────────────────────────────────────────────────────
+  {
+    name: 'speak_in_voice',
+    description: [
+      'Convert text to speech using ElevenLabs and play it in the voice channel the user is currently in.',
+      'Use this when the user is in a voice channel and you want to respond verbally — for example when asked a question while on a call.',
+      'Keep the text natural and conversational — avoid markdown, code blocks, bullet points, and URLs since they sound awkward when spoken.',
+      'If ELEVENLABS_API_KEY is not configured this will return an error.',
+    ].join(' '),
+    input_schema: {
+      type: 'object',
+      properties: {
+        text: {
+          type: 'string',
+          description: 'What to say out loud. Plain conversational text only — no markdown, no code blocks.',
+        },
+      },
+      required: ['text'],
+    },
+  },
+  {
+    name: 'leave_voice',
+    description: 'Disconnect the bot from the voice channel immediately. Use if the bot gets stuck or the user asks it to leave.',
+    input_schema: { type: 'object', properties: {}, required: [] },
+  },
 ];
 
 // Route a tool call from Claude to the right function.
@@ -230,6 +258,8 @@ export async function executeTool(name, input) {
                               });
     case 'web_search':        return webSearch(input.query, input.count);
     case 'run_npm':           return runNpm(input.command);
+    case 'speak_in_voice':    return speakInVoice(input.text);
+    case 'leave_voice':       return leaveVoice();
     default:                  return `Unknown tool: ${name}`;
   }
 }

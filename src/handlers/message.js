@@ -1,4 +1,5 @@
 import { chat, clearHistory, getHistoryLength } from '../claude.js';
+import { setVoiceChannel } from '../tools/index.js';
 
 const ALLOWED_CHANNEL_IDS = process.env.ALLOWED_CHANNEL_IDS
   ? process.env.ALLOWED_CHANNEL_IDS.split(',').map(id => id.trim())
@@ -91,6 +92,15 @@ export async function handleMessage(message) {
     return;
   }
 
+  // Detect if the user is in a voice channel and tell the tools about it
+  const voiceChannel = message.member?.voice?.channel ?? null;
+  setVoiceChannel(voiceChannel);
+
+  // Append voice context so Claude knows it can speak
+  const voiceNote = voiceChannel
+    ? `\n\n[${message.author.username} is in voice channel "${voiceChannel.name}". You can use speak_in_voice to respond verbally — use plain conversational text, no markdown.]`
+    : '';
+
   // Show a typing indicator while we think
   await message.channel.sendTyping();
 
@@ -102,7 +112,7 @@ export async function handleMessage(message) {
   try {
     const response = await chat(
       message.channelId,
-      text || '(image shared — no text)',
+      (text || '(image shared — no text)') + voiceNote,
       images,
       message.author.username,
     );
