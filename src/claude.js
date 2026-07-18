@@ -61,6 +61,7 @@ export async function chat(channelId, text, images = [], username = 'User') {
   const MAX_TOOL_CALLS = 20; // safety cap
 
   while (toolCallCount < MAX_TOOL_CALLS) {
+    console.log(`[claude] channel=${channelId} sending ${history.length} messages to Claude`);
     const response = await client.messages.create({
       model: MODEL,
       max_tokens: 4096,
