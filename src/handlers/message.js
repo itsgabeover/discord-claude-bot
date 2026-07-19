@@ -184,7 +184,7 @@ export async function handleMessage(message) {
 
   // Detect if the user is in a voice channel and tell the tools about it
   const voiceChannel = message.member?.voice?.channel ?? null;
-  setVoiceChannel(voiceChannel);
+  setVoiceChannel(project.id, voiceChannel);
 
   // Append voice context so Claude knows it can speak
   const voiceNote = voiceChannel
