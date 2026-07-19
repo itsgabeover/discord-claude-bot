@@ -132,16 +132,27 @@ prompting the bot mid-deploy if it might commit.
 ## Current state
 
 Working in production: multi-project routing, the text path, all 22 tools,
-prompt caching, per-project GitHub tokens.
+prompt caching, per-project GitHub tokens, and the **Agent SDK backend** —
+`USE_AGENT_SDK=1` is set on Render and the boot log reads `[msg] Claude
+backend: Agent SDK`. Images, session resume, and the `cwd` boundary have still
+not been deliberately exercised; see `AGENT-SDK-MIGRATION.md`.
 
 Built but not yet exercised:
 
-- **Voice conversation** (`voiceChannelIds` per project). The code is deployed,
-  but no voice channel is mapped yet and **the ElevenLabs balance is at zero**,
-  so transcription and speech both fail. The bot will still join and listen.
-- **Agent SDK backend** (`USE_AGENT_SDK=1`). Never run against a live server.
-  Images, session resume, and the `cwd` boundary are unverified — see
-  `AGENT-SDK-MIGRATION.md`.
+- **Voice conversation** (`voiceChannelIds` per project). Channels are now
+  mapped in the Render secret file. TTS has never succeeded: a `speak_in_voice`
+  call reached ElevenLabs and failed, and the status code was not recorded
+  because `synthesize()` returned the error without logging it. It logs now, so
+  the next attempt is diagnosable from Render. The balance is *not* zero — the
+  earlier note saying so was a guess made from a missing log line, not a
+  reading. Suspect the key or `ELEVENLABS_VOICE_ID` until a status code says
+  otherwise.
+
+  Note that `projects.json` is read once at startup (`config.js:35`), so
+  editing the secret file on Render does nothing until the service restarts.
+  The startup banner prints a `voice:` line per project — that is the way to
+  confirm a mapping actually loaded, since an unmapped voice channel and a
+  failed config load are indistinguishable from the outside: both are silence.
 
 Known outstanding:
 
