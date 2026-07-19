@@ -28,6 +28,7 @@ export async function speakInVoice(text) {
 
   const apiKey  = process.env.ELEVENLABS_API_KEY;
   const voiceId = process.env.ELEVENLABS_VOICE_ID;
+  const modelId = process.env.ELEVENLABS_MODEL_ID || 'eleven_flash_v2_5';
 
   if (!apiKey || !voiceId) {
     return 'ElevenLabs is not configured. Set ELEVENLABS_API_KEY and ELEVENLABS_VOICE_ID.';
@@ -59,7 +60,7 @@ export async function speakInVoice(text) {
     },
     body: JSON.stringify({
       text: spoken,
-      model_id: 'eleven_monolingual_v1',
+      model_id: modelId,
       voice_settings: {
         stability: 0.5,
         similarity_boost: 0.75,
