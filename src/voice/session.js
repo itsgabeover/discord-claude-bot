@@ -36,20 +36,101 @@ const MIN_UTTERANCE_SECONDS = parseFloat(process.env.VOICE_MIN_SECONDS || '0.6')
 // at the wrong rate and the transcript is gibberish.
 const DECODER_OPTS = { rate: 48000, channels: 2, frameSize: 960 };
 
+/**
+ * Tool packs a voice session loads, deliberately narrower than the project's.
+ *
+ * Every tool definition sits in the prefix that is resent on every utterance,
+ * and the prefix is the dominant term in reply latency: a fresh session costs
+ * roughly 23k tokens before anyone has spoken, against a spoken answer of a few
+ * hundred. Text turns are occasional and can absorb that; voice generates a
+ * full turn per utterance, and the cost is paid as dead air the speaker sits
+ * through.
+ *
+ * files + web makes voice a talking-and-reading interface — he can read the
+ * code and look things up, but committing and pushing stay on the text path,
+ * where there is a transcript to review before anything lands in a repo.
+ */
+const VOICE_TOOL_PACKS = (process.env.VOICE_TOOL_PACKS || 'files,web')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
+
+/**
+ * Phrases that address the bot.
+ *
+ * Matched against a normalized transcript, so punctuation and capitalization
+ * from the transcriber don't matter ("Hey, Buddy." and "hey buddy" are the same
+ * string by the time they get here). The near-misses are included because STT
+ * reliably mangles a short unstressed second word — "buddy" comes back as
+ * "body" or "bud" often enough that omitting them would read as the wake word
+ * being broken.
+ */
+const WAKE_PHRASES = (process.env.VOICE_WAKE_PHRASES ||
+  'hey buddy,hi buddy,hey bud,hey body,hey buddie,ok buddy,okay buddy')
+  .split(',')
+  .map((s) => s.trim().toLowerCase())
+  .filter(Boolean);
+
+// After a reply, keep listening without the wake phrase for this long. A
+// conversation is a back-and-forth; requiring "hey buddy" before every sentence
+// makes it a series of commands instead.
+const FOLLOW_UP_MS = parseInt(process.env.VOICE_FOLLOW_UP_MS || '30000', 10);
+
+/**
+ * Utterances before the conversation history is dropped.
+ *
+ * MAX_STORED_SESSIONS bounds how many channels stay resident but nothing bounds
+ * the length of one conversation, so a long voice session grows without limit —
+ * and unlike a text channel, voice appends a turn per utterance. Dropping the
+ * history costs the thread's memory of what was said; keeping it costs latency
+ * on every remaining turn, which is the thing being felt.
+ */
+const MAX_VOICE_TURNS = parseInt(process.env.VOICE_MAX_TURNS || '20', 10);
+
+/** Lowercase, strip punctuation, collapse whitespace — for wake-phrase matching. */
+function normalize(text) {
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * Was the bot addressed?
+ *
+ * Checked against the opening of the utterance rather than anywhere in it, so
+ * saying his name in passing mid-sentence doesn't summon him. The allowance is
+ * generous enough to survive a transcriber that drops a leading word.
+ */
+function isAddressed(transcript) {
+  const opening = normalize(transcript).slice(0, 40);
+  return WAKE_PHRASES.some((phrase) => opening.includes(phrase));
+}
+
 /** guildId -> VoiceSession */
 const sessions = new Map();
 
 export class VoiceSession {
-  constructor({ project, voiceChannel, chat }) {
+  constructor({ project, voiceChannel, chat, clearHistory }) {
     this.project = project;
+    // The project as voice sees it: same id, repo, and prompt — only the tool
+    // set narrows. id is unchanged deliberately, since handlers key per-project
+    // state on it and a second id would look like a second project.
+    this.voiceProject = { ...project, toolPacks: VOICE_TOOL_PACKS };
     this.voiceChannel = voiceChannel;
     this.chat = chat;
+    this.clearHistory = clearHistory;
     this.connection = null;
     // Serializes turns: the bot must not transcribe its own reply, nor answer
     // two people at once with one connection to play audio on.
     this.busy = false;
     this.listening = new Set();
     this.closed = false;
+    // Wall-clock until which speech is treated as directed at the bot without
+    // the wake phrase. Zero means only a wake phrase will engage him.
+    this.engagedUntil = 0;
+    this.turns = 0;
   }
 
   get guildId() {
@@ -78,13 +159,32 @@ export class VoiceSession {
       return false;
     }
 
+    // Each join starts a fresh conversation. A voice call is an episode with a
+    // beginning and an end, unlike a text channel that is picked up days later,
+    // and resuming the last one is what made the prefix creep across rejoins.
+    this.resetHistory('new session');
+
     console.log(
-      `[voice:${this.project.id}] Joined "${this.voiceChannel.name}" — listening.`,
+      `[voice:${this.project.id}] Joined "${this.voiceChannel.name}" — listening ` +
+        `(wake: "${WAKE_PHRASES[0]}", tools: ${VOICE_TOOL_PACKS.join('+')}).`,
     );
 
     this.connection.receiver.speaking.on('start', (userId) => this.onSpeakingStart(userId));
     await this.greet();
     return true;
+  }
+
+  /** Drop the thread's history. Safe to call when no history exists yet. */
+  resetHistory(reason) {
+    this.turns = 0;
+    try {
+      this.clearHistory?.(this.historyKey);
+    } catch (err) {
+      // Losing the reset costs latency, not correctness — never the session.
+      console.warn(`[voice:${this.project.id}] History reset failed: ${err.message}`);
+      return;
+    }
+    console.log(`[voice:${this.project.id}] History reset (${reason}).`);
   }
 
   /**
@@ -97,7 +197,7 @@ export class VoiceSession {
     this.busy = true;
     try {
       const reply = await this.chat(
-        this.project,
+        this.voiceProject,
         this.historyKey,
         '[You just joined a voice channel. Greet whoever is here in one short ' +
           'sentence and ask what they want to work on. Speak naturally — this ' +
@@ -106,6 +206,10 @@ export class VoiceSession {
         'system',
       );
       await this.say(reply);
+      // The greeting is an invitation, so the window opens without a wake
+      // phrase — being asked a question and then ignored for answering it
+      // would read as the bot being broken.
+      this.engage();
     } catch (err) {
       console.error(`[voice:${this.project.id}] Greeting failed: ${err.message}`);
     } finally {
@@ -148,6 +252,24 @@ export class VoiceSession {
     });
   }
 
+  /** Open the follow-up window, measured from now. */
+  engage() {
+    this.engagedUntil = Date.now() + FOLLOW_UP_MS;
+  }
+
+  /**
+   * Was this utterance meant for the bot?
+   *
+   * True if it opens with a wake phrase, or if it lands inside the window after
+   * his last reply — a conversation is a back-and-forth, and requiring the name
+   * before every sentence turns it into a series of commands. Outside both, the
+   * room is talking amongst itself and he stays out of it.
+   */
+  isForMe(transcript) {
+    if (isAddressed(transcript)) return true;
+    return Date.now() < this.engagedUntil;
+  }
+
   async handleUtterance(userId, pcm, seconds) {
     if (this.busy || this.closed) return;
     this.busy = true;
@@ -161,8 +283,22 @@ export class VoiceSession {
         `[voice:${this.project.id}] ${username} (${seconds.toFixed(1)}s): ${transcript}`,
       );
 
+      // The gate sits after transcription because deciding whether the bot was
+      // addressed needs words — so an ignored utterance still costs an STT
+      // call. What it saves is the model turn and the speech, which are the
+      // expensive parts and the ones that produce an unwanted interruption.
+      if (!this.isForMe(transcript)) {
+        console.log(`[voice:${this.project.id}] Not addressed — ignoring.`);
+        return;
+      }
+
+      if (this.turns >= MAX_VOICE_TURNS) {
+        this.resetHistory(`${MAX_VOICE_TURNS}-turn cap`);
+      }
+      this.turns += 1;
+
       const reply = await this.chat(
-        this.project,
+        this.voiceProject,
         this.historyKey,
         transcript +
           '\n\n[This came from voice. Answer in one or two spoken sentences — ' +
@@ -171,6 +307,9 @@ export class VoiceSession {
         username,
       );
       await this.say(reply);
+      // Extended from the end of the reply rather than its start, so a slow
+      // turn doesn't eat the window the speaker was given to respond in.
+      this.engage();
     } catch (err) {
       console.error(`[voice:${this.project.id}] Turn failed: ${err.message}`);
     } finally {
@@ -208,9 +347,9 @@ export function getSession(guildId) {
   return sessions.get(guildId);
 }
 
-export async function startSession({ project, voiceChannel, chat }) {
+export async function startSession({ project, voiceChannel, chat, clearHistory }) {
   if (sessions.has(voiceChannel.guild.id)) return sessions.get(voiceChannel.guild.id);
-  const session = new VoiceSession({ project, voiceChannel, chat });
+  const session = new VoiceSession({ project, voiceChannel, chat, clearHistory });
   sessions.set(voiceChannel.guild.id, session);
   const ok = await session.start();
   return ok ? session : null;

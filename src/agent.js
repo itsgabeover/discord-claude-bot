@@ -70,6 +70,45 @@ const sessions = new Map();
 const MAX_STORED_SESSIONS = parseInt(process.env.MAX_STORED_SESSIONS || '25', 10);
 
 /**
+ * Tokens a channel's session may reach before its history is dropped.
+ *
+ * `resume` replays the whole transcript into every subsequent turn, so each
+ * file read stays in the prefix for the rest of the conversation. Production
+ * showed one channel climbing 188k → 199k → 263k → 287k across four messages,
+ * the last of which was a short follow-up question that cost $0.15 purely to
+ * carry everything before it.
+ *
+ * Bounded by tokens rather than by turns, which is where this departs from
+ * ../voice/session.js. Voice utterances all cost about the same, so counting
+ * them is a fair proxy for size; text turns in that same log ran 59k to 432k,
+ * so a turn count would fire after twenty trivial questions and not at all
+ * during one long refactor. Tokens measure the thing actually being capped.
+ *
+ * Prompt caching is why this went unnoticed: most of a resumed prefix bills at
+ * cache-read rates, so 432k tokens cost $0.36 rather than the $1.30 they would
+ * fresh. Caching makes the growth cheaper, not absent — and it does far less
+ * for latency, which tracks prefix size regardless of what the tokens cost.
+ */
+const DEFAULT_SESSION_TOKENS = 150000;
+
+const MAX_SESSION_TOKENS = (() => {
+  const raw = process.env.MAX_SESSION_TOKENS;
+  if (raw === undefined || raw === '') return DEFAULT_SESSION_TOKENS;
+  const parsed = parseInt(raw, 10);
+  // NaN would compare false against the cap and silently disable it, so a typo
+  // would read as "the cap is off" with nothing said. Same guard, and the same
+  // reasoning, as MAX_BUDGET_USD above.
+  if (Number.isNaN(parsed)) {
+    console.warn(
+      `[agent] MAX_SESSION_TOKENS="${raw}" is not a number — using ${DEFAULT_SESSION_TOKENS}.`,
+    );
+    return DEFAULT_SESSION_TOKENS;
+  }
+  // 0 (or negative) means no cap — sessions grow unbounded.
+  return parsed > 0 ? parsed : 0;
+})();
+
+/**
  * InMemorySessionStore with an LRU bound.
  *
  * The bare store never evicts: every channel the bot has ever answered in keeps
@@ -491,10 +530,34 @@ export async function chat(project, channelId, text, images = [], username = 'Us
       (capReason ? ` (stopped: ${capReason})` : ''),
   );
 
-  if (capReason) {
-    const summary = await summarizeIncompleteTask(project, sessionId, capReason);
-    return summary + usageFooter(totalTokens, costUsd);
+  // Composed before the reset below, because summarizeIncompleteTask() resumes
+  // this same sessionId — clearing first would evict the transcript it needs,
+  // and the eviction is unawaited, so it would fail intermittently rather than
+  // every time. That is the worst available failure: a turn that already hit a
+  // cap losing its explanation of what it managed to finish.
+  const body = capReason
+    ? await summarizeIncompleteTask(project, sessionId, capReason)
+    : finalText.trim() || '*(no text response)*';
+
+  // Reset *after* answering, not before. Checking on the way in would drop the
+  // context the current message probably depends on — a follow-up like "now do
+  // the same for the other file" is exactly the kind of message that arrives on
+  // a large session — and would leave the user watching the bot forget the
+  // thread mid-task with no idea why. Trimming on the way out spends one more
+  // expensive turn and starts the next one clean.
+  //
+  // Said out loud rather than only logged: silent context loss is
+  // indistinguishable from the bot ignoring what was just agreed, and the next
+  // message is the one that would hit it.
+  let resetNote = '';
+  if (MAX_SESSION_TOKENS > 0 && totalTokens > MAX_SESSION_TOKENS) {
+    console.log(
+      `[agent:${project.id}] channel=${channelId} session at ${totalTokens} tokens ` +
+        `(cap ${MAX_SESSION_TOKENS}) — resetting history.`,
+    );
+    clearHistory(channelId);
+    resetNote = '\n\n-# History reset — this thread got long enough to be slow. Next message starts fresh.';
   }
 
-  return (finalText.trim() || '*(no text response)*') + usageFooter(totalTokens, costUsd);
+  return body + usageFooter(totalTokens, costUsd) + resetNote;
 }
