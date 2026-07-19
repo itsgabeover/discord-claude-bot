@@ -19,6 +19,34 @@ function usageFooter(totalTokens) {
 }
 
 /**
+ * Return `messages` with a cache breakpoint on its final content block, so the
+ * whole conversation so far is cached for the next request in the loop.
+ *
+ * Copies rather than mutating, and deliberately so: the array it receives is
+ * the stored per-channel history, which lives for the life of the process. A
+ * marker written into it would still be there next iteration, when a different
+ * message is last — and the API allows only four breakpoints per request, so
+ * after a few tool calls every request would be rejected outright.
+ *
+ * @param {Array} messages - Stored history; not modified
+ * @returns {Array} Copy safe to send
+ */
+function withCacheBreakpoint(messages) {
+  const last = messages[messages.length - 1];
+  if (!last || !Array.isArray(last.content) || last.content.length === 0) {
+    return messages;
+  }
+
+  const blocks = last.content.slice();
+  blocks[blocks.length - 1] = {
+    ...blocks[blocks.length - 1],
+    cache_control: { type: 'ephemeral' },
+  };
+
+  return [...messages.slice(0, -1), { ...last, content: blocks }];
+}
+
+/**
  * Called when a chat() turn hits a safety cap (tool calls or token budget)
  * before Claude reached a final answer. Rather than a canned "try again"
  * message, ask Claude itself — with the full history of what it already
@@ -111,19 +139,52 @@ export async function chat(channelId, text, images = [], username = 'User', onTo
   let toolCallCount = 0;
   let totalTokens = 0;
 
+  // Read once per turn rather than per iteration. getSystemPrompt() caches
+  // internally, but pinning it here also guarantees the prompt can't change
+  // mid-turn — a single changed byte would invalidate the cache for every
+  // remaining iteration of this loop.
+  const systemPrompt = await getSystemPrompt();
+
   while (toolCallCount < MAX_TOOL_CALLS && totalTokens < MAX_TOKENS_PER_TURN) {
     console.log(`[claude] channel=${channelId} sending ${history.length} messages to Claude`);
     const response = await client.messages.create({
       model: MODEL,
       max_tokens: 4096,
-      system: await getSystemPrompt(),
+      // Requests render as tools -> system -> messages, so this single
+      // breakpoint covers the tool definitions as well as the prompt. Both are
+      // byte-identical on every request, so from the second call onward this
+      // whole prefix is a cache read at a fraction of the input price. It
+      // matters because a tool-using turn is not one request — it is one per
+      // tool call, each resending this same prefix.
+      system: [
+        {
+          type: 'text',
+          text: systemPrompt,
+          cache_control: { type: 'ephemeral' },
+        },
+      ],
       tools: toolDefinitions,
-      messages: history,
+      // Second breakpoint, moving with the conversation: each iteration reads
+      // everything the previous one cached and extends it by a turn.
+      messages: withCacheBreakpoint(history),
     });
 
-    const { input_tokens = 0, output_tokens = 0 } = response.usage ?? {};
-    totalTokens += input_tokens + output_tokens;
-    console.log(`[claude] channel=${channelId} usage: +${input_tokens} in / +${output_tokens} out (${totalTokens} total this turn)`);
+    const {
+      input_tokens = 0,
+      output_tokens = 0,
+      cache_creation_input_tokens: cacheWrite = 0,
+      cache_read_input_tokens: cacheRead = 0,
+    } = response.usage ?? {};
+
+    // input_tokens counts only the *uncached* remainder — the cached prefix is
+    // reported separately. Summing just input + output would make the turn
+    // budget silently balloon as the cache hit rate rises, since most of the
+    // prompt would stop being counted at all.
+    totalTokens += input_tokens + cacheWrite + cacheRead + output_tokens;
+    console.log(
+      `[claude] channel=${channelId} usage: +${input_tokens} in / +${output_tokens} out / ` +
+        `cache ${cacheRead} read, ${cacheWrite} written (${totalTokens} total this turn)`,
+    );
 
     // Add Claude's response to history
     history.push({ role: 'assistant', content: response.content });
