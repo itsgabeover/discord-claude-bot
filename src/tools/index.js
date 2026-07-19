@@ -384,8 +384,8 @@ const PACKS = {
       },
     ],
     handlers: {
-      speak_in_voice: (i) => speakInVoice(i.text),
-      leave_voice: () => leaveVoice(),
+      speak_in_voice: (i, p) => speakInVoice(i.text, p),
+      leave_voice: (i, p) => leaveVoice(p),
     },
   },
 };

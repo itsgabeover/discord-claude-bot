@@ -10,19 +10,49 @@ import {
 } from '@discordjs/voice';
 import { Readable } from 'stream';
 
-// The voice channel the current message author is in (set by the message handler)
-let _voiceChannel = null;
+/**
+ * The voice channel each project's most recent message author was in.
+ *
+ * Scoped per project rather than kept in one variable, because one variable is
+ * shared by every server the bot serves. A turn is long and asynchronous — a
+ * chain of tool calls — so a message arriving in another server partway through
+ * would overwrite it, and speak_in_voice would then join *that* server's voice
+ * channel: it reads guild.id off this value to open the connection. Keying by
+ * project means the game server can never redirect audio meant for Wublets.
+ *
+ * project.id is the finest granularity available here. Both backends hand tool
+ * handlers `(input, project)` and nothing narrower, and the SDK path's MCP
+ * server is built once per project and cached, so its handlers close over the
+ * project alone. Two turns running concurrently *within one project* can still
+ * overwrite each other; that window is far smaller than the cross-server one,
+ * and closing it would mean threading per-turn context through both backends.
+ *
+ * @type {Map<string, object|null>}
+ */
+const voiceChannels = new Map();
 
-export function setVoiceChannel(channel) {
-  _voiceChannel = channel;
+/**
+ * Record where this project's current author is speaking from.
+ *
+ * Called by the message handler for every message, including with null when the
+ * author isn't in voice — which is what clears a stale channel from a previous
+ * message rather than leaving the bot ready to talk into an empty room.
+ */
+export function setVoiceChannel(projectId, channel) {
+  voiceChannels.set(projectId, channel ?? null);
+}
+
+function voiceChannelFor(project) {
+  return voiceChannels.get(project?.id) ?? null;
 }
 
 /**
  * Convert text to speech via ElevenLabs and play it in the user's voice channel.
  * Joins automatically, speaks, then disconnects.
  */
-export async function speakInVoice(text) {
-  if (!_voiceChannel) {
+export async function speakInVoice(text, project) {
+  const voiceChannel = voiceChannelFor(project);
+  if (!voiceChannel) {
     return 'The user is not in a voice channel right now — cannot speak.';
   }
 
@@ -77,14 +107,14 @@ export async function speakInVoice(text) {
   console.log(`[voice] Got ${audioBuffer.length} bytes of audio`);
 
   // Get or create voice connection
-  const guildId = _voiceChannel.guild.id;
+  const guildId = voiceChannel.guild.id;
   let connection = getVoiceConnection(guildId);
 
   if (!connection || connection.state.status === VoiceConnectionStatus.Destroyed) {
     connection = joinVoiceChannel({
-      channelId: _voiceChannel.id,
+      channelId: voiceChannel.id,
       guildId,
-      adapterCreator: _voiceChannel.guild.voiceAdapterCreator,
+      adapterCreator: voiceChannel.guild.voiceAdapterCreator,
       selfDeaf: false,
     });
   }
@@ -115,18 +145,19 @@ export async function speakInVoice(text) {
   });
 
   connection.destroy();
-  return `Spoke in voice channel "${_voiceChannel.name}" and disconnected.`;
+  return `Spoke in voice channel "${voiceChannel.name}" and disconnected.`;
 }
 
 /**
  * Leave the voice channel immediately (useful if the bot gets stuck).
  */
-export function leaveVoice() {
-  if (!_voiceChannel) return 'Not tracking a voice channel.';
-  const connection = getVoiceConnection(_voiceChannel.guild.id);
+export function leaveVoice(project) {
+  const voiceChannel = voiceChannelFor(project);
+  if (!voiceChannel) return 'Not tracking a voice channel.';
+  const connection = getVoiceConnection(voiceChannel.guild.id);
   if (connection) {
     connection.destroy();
-    return `Left voice channel "${_voiceChannel.name}".`;
+    return `Left voice channel "${voiceChannel.name}".`;
   }
   return 'Not currently in a voice channel.';
 }
