@@ -313,6 +313,34 @@ Each project gets its own **prompt**, **repo checkout** (cloned into `repos/<key
 
 The isolation is enforced, not just conventional — file tools resolve paths against their own project's checkout, so one project cannot read or write another's files even with `../` or an absolute path.
 
+### Several repos in one server
+
+Add `channelIds` to a project and it serves only those channels. The entry with *no* `channelIds` is that server's default and handles everything else — so a single server can work on more than one repo:
+
+```json
+{
+  "projects": {
+    "web": {
+      "guildId": "111111111111111111",
+      "repoUrl": "https://github.com/yourname/wublets-website",
+      "toolPacks": ["files", "git", "npm", "web", "media", "gdrive", "todo"]
+    },
+    "app": {
+      "guildId": "111111111111111111",
+      "channelIds": ["222222222222222222"],
+      "repoUrl": "https://github.com/yourname/wublets-app",
+      "toolPacks": ["files", "git", "npm", "web", "media"]
+    }
+  }
+}
+```
+
+A message resolves **channel first, then the guild default, then nothing**. So `#app-dev` works on the phone app and every other channel works on the web app. Each still gets its own checkout, prompt, and tool packs — a conversation never spans two repos, which is what keeps the path guard meaningful.
+
+A guild may have at most one default, and no two projects may claim the same channel. Either mistake stops the bot at startup rather than picking arbitrarily. `channelIds` doubles as that project's allowlist, so there's no need to repeat them in `allowedChannelIds`.
+
+> **Watch your GitHub token.** A fine-grained PAT is scoped to specific repositories — one scoped to a single repo can't clone the others, and the bot will fail to prepare them at startup. Either widen the token to every repo, or give each project its own `githubToken`.
+
 > **`projects.json` is gitignored** (it holds repo URLs and can hold tokens), as is `repos/`. A malformed config makes the bot refuse to start rather than silently reverting to single-project mode.
 
 ---

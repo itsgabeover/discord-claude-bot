@@ -131,20 +131,25 @@ export async function handleMessage(message) {
   const isMentioned = message.mentions.has(message.client.user);
   if (!isMentioned) return;
 
-  // Which project does this server belong to? In multi-project mode an
-  // unconfigured guild gets nothing — the bot must never fall back to some
+  // Which project serves this channel? Channel-scoped projects win over the
+  // guild default, so one server can hold several repos. In multi-project mode
+  // an unclaimed channel gets nothing — the bot must never fall back to some
   // other project's prompt, repo, or push credentials just because it happens
   // to have been invited somewhere.
-  const project = getProjectForGuild(message.guildId);
+  const project = getProjectForChannel(message.guildId, message.channelId);
   if (!project) {
-    console.warn(`[msg] Ignoring mention from unconfigured guild ${message.guildId}`);
+    console.warn(
+      `[msg] Ignoring mention from unconfigured guild ${message.guildId} ` +
+        `channel ${message.channelId}`,
+    );
     if (isMultiProject()) {
       await message.reply(
-        "I'm not configured for this server yet — add it to `projects.json` and restart me.",
+        "I'm not set up for this channel yet — add it to `projects.json` and restart me.",
       );
     }
     return;
   }
+  console.log(`[msg] ${message.channelId} -> project "${project.id}" (${project.repoPath})`);
 
   // Optional: restrict to specific channels (per project, falling back to env)
   const allowedChannels = project.allowedChannelIds ?? ALLOWED_CHANNEL_IDS;
