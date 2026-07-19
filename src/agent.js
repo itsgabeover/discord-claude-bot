@@ -1,3 +1,4 @@
+import fs from 'fs';
 import { query, InMemorySessionStore } from '@anthropic-ai/claude-agent-sdk';
 import { getMcpServer, SERVER_NAME } from './tools/mcp.js';
 import { getSystemPrompt } from './prompts/system.js';
@@ -70,6 +71,61 @@ const sessions = new Map();
 // so this is not a behaviour regression. Swap in a Redis/S3 SessionStore here
 // if conversations should ever outlive the process.
 const sessionStore = new InMemorySessionStore();
+
+/**
+ * The SDK built-in tools the bot is allowed to use.
+ *
+ * Read-only on purpose. The bot already has write tools of its own — write_file,
+ * the git pack, run_npm — and those pin every path inside the project repo via
+ * safeResolve(). These three add what the bot genuinely lacks: real search.
+ * list_directory can only list one directory at a time, so finding a symbol
+ * across a repo currently means a chain of read_file calls.
+ *
+ * Bash is deliberately absent and should stay that way — anyone who can @mention
+ * the bot can steer it, and Bash turns that into a shell on the host.
+ */
+const READONLY_BUILTINS = ['Read', 'Grep', 'Glob'];
+
+/**
+ * Where the built-in tools are rooted, and whether they're available at all.
+ *
+ * This scoping is the whole reason the built-ins are safe to enable. They are
+ * bounded by `cwd`, which defaults to the bot's OWN process directory — one
+ * level above the checkout, since repoPath defaults to ./repo, and the directory
+ * that holds .env, google-credentials.json, and projects.json. Pointing cwd at
+ * the repo is what makes their reach equivalent to the bot's own
+ * safeResolve()-guarded tools rather than a way around them.
+ *
+ * If the checkout is missing — cloneRepoIfNeeded() failed at startup and the bot
+ * kept serving other projects — the built-ins are dropped instead of falling
+ * back to the default cwd. Falling back would silently root them at the bot's
+ * own credentials, which is exactly what this scoping exists to prevent, so a
+ * broken repo loses search rather than gaining reach.
+ *
+ * Not cached: it's one stat() per Discord message, and a repo that appears after
+ * startup should start working without a restart.
+ *
+ * @param {object} project - Resolved project config
+ * @returns {{cwd: string|undefined, builtinTools: string[]}}
+ */
+function workspaceFor(project) {
+  let isRepo = false;
+  try {
+    isRepo = Boolean(project.repoPath) && fs.statSync(project.repoPath).isDirectory();
+  } catch {
+    isRepo = false;
+  }
+
+  if (!isRepo) {
+    console.warn(
+      `[agent:${project.id}] No repo at ${project.repoPath} — built-in tools ` +
+        'disabled for this project (they would otherwise be rooted at the bot itself).',
+    );
+    return { cwd: undefined, builtinTools: [] };
+  }
+
+  return { cwd: project.repoPath, builtinTools: READONLY_BUILTINS };
+}
 
 function usageFooter(totalTokens, costUsd) {
   const cost = typeof costUsd === 'number' ? ` · $${costUsd.toFixed(4)}` : '';
@@ -196,6 +252,8 @@ async function summarizeIncompleteTask(project, sessionId, reason) {
  */
 export async function chat(project, channelId, text, images = [], username = 'User', onToolCall) {
   const { server, toolNames } = getMcpServer(project);
+  const { cwd, builtinTools } = workspaceFor(project);
+  const allowed = [...toolNames, ...builtinTools];
   const content = await buildUserContent(text, images, username);
   const resumeId = sessions.get(channelId);
 
@@ -216,7 +274,10 @@ export async function chat(project, channelId, text, images = [], username = 'Us
   let sessionId = resumeId;
 
   console.log(
-    `[agent:${project.id}] channel=${channelId} ${resumeId ? 'resuming' : 'starting'} session`,
+    `[agent:${project.id}] channel=${channelId} ${resumeId ? 'resuming' : 'starting'} session` +
+      ` (${toolNames.length} bot tools` +
+      (builtinTools.length ? ` + ${builtinTools.join('/')} in ${cwd}` : ', no built-ins') +
+      ')',
   );
 
   for await (const message of query({
@@ -228,19 +289,23 @@ export async function chat(project, channelId, text, images = [], username = 'Us
       // the bot's own, and there is no way to subtract parts of it afterwards.
       systemPrompt: await getSystemPrompt(project),
       mcpServers: { [SERVER_NAME]: server },
-      // No built-in tools. The bot's filesystem and git tools pin every path
-      // inside the project repo via safeResolve(); the SDK's built-in Read /
-      // Write / Bash do not, and Bash in particular would hand anyone who can
-      // @mention the bot arbitrary shell access on the host.
-      tools: [],
-      // Auto-approve exactly the bot's own tools. Anything else falls through
-      // to canUseTool below, which denies — so a tool arriving from somewhere
-      // unexpected fails closed instead of running.
-      allowedTools: toolNames,
+      // Read-only built-ins only, rooted at the project repo by `cwd` below.
+      // Everything that writes stays with the bot's own tools, which pin paths
+      // via safeResolve(). Write / Edit / Bash are never listed here — Bash in
+      // particular would hand anyone who can @mention the bot a shell.
+      tools: builtinTools,
+      // Rooting the built-ins at the checkout instead of the bot's own
+      // directory. Omitted when the repo is missing, in which case builtinTools
+      // is empty too, so there is nothing for a default cwd to scope.
+      ...(cwd ? { cwd } : {}),
+      // Auto-approve exactly the bot's tools plus those built-ins. Anything
+      // else falls through to canUseTool below, which denies — so a tool
+      // arriving from somewhere unexpected fails closed instead of running.
+      allowedTools: allowed,
       canUseTool: async (toolName, input) => {
         // updatedInput must echo the original input — it REPLACES what the tool
         // receives, so returning {} here would strip every argument.
-        if (toolNames.includes(toolName)) return { behavior: 'allow', updatedInput: input };
+        if (allowed.includes(toolName)) return { behavior: 'allow', updatedInput: input };
         console.warn(`[agent:${project.id}] denied unexpected tool: ${toolName}`);
         return { behavior: 'deny', message: `${toolName} is not available to this bot.` };
       },

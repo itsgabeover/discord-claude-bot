@@ -101,10 +101,25 @@ with no second definition to maintain.
 
 Deliberate choices worth not undoing:
 
-- **`tools: []`** — every SDK built-in is disabled. The bot's own filesystem and
-  git tools pin paths inside the project repo via `safeResolve()`; the built-in
-  `Read`/`Write`/`Bash` do not. `Bash` in particular would give anyone who can
-  `@mention` the bot arbitrary shell access on the host.
+- **Only three SDK built-ins are enabled — `Read`, `Grep`, `Glob` — and only
+  read-only ones.** They add what the bot genuinely lacked: real search.
+  `list_directory` lists one directory at a time, so finding a symbol across the
+  repo previously meant a chain of `read_file` calls. Everything that *writes*
+  stays with the bot's own tools, which pin paths via `safeResolve()`.
+- **`Write`, `Edit`, and `Bash` are never enabled.** `Bash` in particular would
+  give anyone who can `@mention` the bot a shell on the host.
+- **`cwd` is set to the project's `repoPath`, and that is load-bearing.** The
+  built-ins are scoped by `cwd`, which defaults to the bot's *own* process
+  directory — one level above the checkout (`repoPath` defaults to `./repo`) and
+  the directory holding `.env`, `google-credentials.json`, and `projects.json`.
+  Setting `cwd` is what keeps their reach equivalent to `safeResolve()`'s rather
+  than a way around it. **Enabling a built-in without setting `cwd` would point
+  it at the bot's own credentials.**
+- **A missing repo drops the built-ins rather than falling back.** If
+  `cloneRepoIfNeeded()` failed at startup and the bot kept serving other
+  projects, `workspaceFor()` returns no `cwd` *and* no built-ins — a broken repo
+  loses search instead of gaining reach. Verified against a missing path, a null
+  path, and a path that is a file rather than a directory.
 - **`allowedTools`** lists exactly the bot's 22 tools, so they auto-approve;
   `canUseTool` denies anything else, so an unexpected tool fails closed.
 - **`permissionMode: 'bypassPermissions'` is NOT used.** It appears in a lot of
@@ -136,9 +151,11 @@ Figma, Context7 — alongside its own tools, with `headers` carrying auth. The
 Messages API path had no MCP client at all, so this is genuinely new capability
 rather than a reshuffle.
 
-**Built-in tools.** The SDK ships `Read`, `Write`, `Edit`, `Bash`, `Glob`,
-`Grep`, `WebSearch`, and `WebFetch`. All are disabled here via `tools: []` — see
-Safety posture above for why `Bash` in particular stays off.
+**The rest of the built-in toolset.** The SDK also ships `Write`, `Edit`,
+`Bash`, `WebSearch`, and `WebFetch` beyond the three read-only ones enabled
+here. `Bash` should stay off permanently; `Write`/`Edit` are redundant with
+`write_file` and would need the same `cwd` scoping to be safe — see Safety
+posture above.
 
 **Subagents, skills, plugins.** `agents`, `skills`, and `plugins` options exist
 and are unused.
@@ -184,6 +201,10 @@ Verified in this environment, without credentials:
 - The `PreToolUse` hook actually driving the live progress message.
 - `summarizeIncompleteTask()` on the SDK path (needs a real cap hit).
 - Memory headroom for the CLI subprocess on the deployed instance.
+- **That `cwd` actually bounds `Read`/`Grep`/`Glob` at runtime.** The scoping
+  logic and its fail-closed fallback are tested, but no live turn has confirmed
+  the SDK honours `cwd` as the boundary. Worth an explicit first check in a real
+  channel: ask the bot to read `../.env` and confirm it cannot.
 
 Treat the SDK path as untested-in-production until someone exercises it in a
 real channel. That is what the flag is for.

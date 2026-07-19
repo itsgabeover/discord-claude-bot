@@ -54,6 +54,13 @@ const TOOL_LABELS = {
   run_npm: '⚙️ Running npm',
   speak_in_voice: '🔊 Speaking in voice',
   leave_voice: '👋 Leaving voice channel',
+
+  // Agent SDK built-ins (USE_AGENT_SDK=1 only). Capitalised because that's the
+  // name the SDK reports; unlabelled tools fall back to the raw name, which
+  // would surface as a bare "🔧 Grep" mid-conversation.
+  Read: '📖 Reading a file',
+  Grep: '🔍 Searching the code',
+  Glob: '🗂️ Finding files',
 };
 
 // Keep only the most recent steps in the progress message so it doesn't
