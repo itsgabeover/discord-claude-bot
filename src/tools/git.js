@@ -47,6 +47,46 @@ function getAuthenticatedUrl(project) {
 }
 
 /**
+ * Strip the project's token out of anything about to be logged or returned.
+ *
+ * git puts the remote URL in its error text, so a failed push or pull hands
+ * back a message containing `https://TOKEN@github.com/...`. Those strings don't
+ * just reach the console — the tool handlers return them to Claude, which
+ * relays them into the Discord channel. Every catch block below goes through
+ * here for that reason.
+ *
+ * split/join rather than a regex: tokens can contain regex metacharacters, and
+ * a mis-escaped pattern would silently fail to redact.
+ */
+function redact(text, project) {
+  const token = project?.githubToken;
+  if (!token || !text) return text;
+  return String(text).split(token).join('***');
+}
+
+/**
+ * Point `origin` at the token-free URL.
+ *
+ * Both `git clone https://TOKEN@...` and `git remote set-url` persist whatever
+ * URL they're given into .git/config — which lives inside the repo root, so the
+ * bot's own read_file can reach it and print the token into Discord. Pushing
+ * and pulling pass the authenticated URL explicitly instead (see below), so
+ * origin never needs to hold the credential.
+ *
+ * Called after cloning and on every startup pull, so an existing checkout that
+ * already has a token baked into its config gets cleaned up rather than staying
+ * exposed until the next redeploy.
+ */
+async function scrubRemote(git, project) {
+  if (!project.repoUrl) return;
+  try {
+    await git.remote(['set-url', 'origin', project.repoUrl]);
+  } catch (err) {
+    console.warn(`[git:${project.id}] Could not scrub origin: ${redact(err.message, project)}`);
+  }
+}
+
+/**
  * Called on bot startup. Clones the repo if REPO_PATH doesn't exist yet,
  * or pulls the latest changes if it's already there.
  */
@@ -70,10 +110,14 @@ export async function cloneRepoIfNeeded(project) {
     try {
       const git = getGit(project);
       await ensureGitIdentity(git, project);
-      await git.pull();
+      // Heals a checkout cloned before this fix, whose origin still carries a
+      // token, before anything else touches it.
+      await scrubRemote(git, project);
+      const status = await git.status();
+      await git.pull(getAuthenticatedUrl(project), status.current);
       console.log('[git] Pull complete.');
     } catch (err) {
-      console.warn(`[git] Pull failed (continuing anyway): ${err.message}`);
+      console.warn(`[git] Pull failed (continuing anyway): ${redact(err.message, project)}`);
     }
     return;
   }
@@ -82,11 +126,15 @@ export async function cloneRepoIfNeeded(project) {
   try {
     const authUrl = getAuthenticatedUrl(project);
     await simpleGit().clone(authUrl, project.repoPath);
-    await ensureGitIdentity(getGit(project), project);
+    const git = getGit(project);
+    // clone stores the URL it was given as origin, token and all — replace it
+    // before the checkout is ever readable by a tool.
+    await scrubRemote(git, project);
+    await ensureGitIdentity(git, project);
     console.log('[git] Clone complete.');
   } catch (err) {
-    console.error(`[git] Clone failed: ${err.message}`);
-    throw err;
+    console.error(`[git] Clone failed: ${redact(err.message, project)}`);
+    throw new Error(redact(err.message, project));
   }
 }
 
@@ -131,21 +179,24 @@ export async function gitPush(project) {
     const status = await git.status();
     const branch = status.current;
 
-    // Set the authenticated remote before pushing
-    const authUrl = getAuthenticatedUrl(project);
-    await git.remote(['set-url', 'origin', authUrl]);
-    await git.push('origin', branch);
+    // Push to the authenticated URL directly rather than storing it as origin.
+    // set-url would persist the token into .git/config, where read_file can
+    // reach it — the URL passed here lives only for the duration of the call.
+    await git.push(getAuthenticatedUrl(project), branch);
 
     return `Pushed to GitHub (branch: ${branch}) — Vercel will deploy automatically.`;
   } catch (err) {
-    return `Error pushing to GitHub: ${err.message}`;
+    return `Error pushing to GitHub: ${redact(err.message, project)}`;
   }
 }
 
 export async function gitPull(project) {
   try {
     const git = getGit(project);
-    const result = await git.pull();
+    // Same reasoning as gitPush: origin deliberately has no credential, so the
+    // authenticated URL is passed per call instead of stored.
+    const status = await git.status();
+    const result = await git.pull(getAuthenticatedUrl(project), status.current);
 
     if (result.files.length === 0) {
       return 'Already up to date — no changes pulled.';
@@ -153,7 +204,7 @@ export async function gitPull(project) {
 
     return `Pulled latest changes:\n${result.files.map(f => `  • ${f}`).join('\n')}`;
   } catch (err) {
-    return `Error pulling from GitHub: ${err.message}`;
+    return `Error pulling from GitHub: ${redact(err.message, project)}`;
   }
 }
 
