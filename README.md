@@ -341,6 +341,62 @@ A guild may have at most one default, and no two projects may claim the same cha
 
 > **Watch your GitHub token.** A fine-grained PAT is scoped to specific repositories — one scoped to a single repo can't clone the others, and the bot will fail to prepare them at startup. Either widen the token to every repo, or give each project its own `githubToken`.
 
+## Voice conversation
+
+The bot can hold a spoken conversation in a voice channel — you talk, it
+listens, answers, and speaks back. No typing involved.
+
+Add `voiceChannelIds` to a project:
+
+```json
+"wayfare": {
+  "guildId": "111111111111111111",
+  "channelIds": ["222222222222222222"],
+  "voiceChannelIds": ["333333333333333333"],
+  "repoUrl": "https://github.com/yourname/wayfare"
+}
+```
+
+Join that voice channel and the bot joins too, greets you in its own voice
+(generated from that project's system prompt, not a canned line), and starts
+listening. When the last person leaves, it disconnects.
+
+**Voice routing has no guild fallback.** An unlisted voice channel is ignored
+entirely — the bot never drops into a social call uninvited. Omit
+`voiceChannelIds` to keep a project text-only. Voice conversations also keep
+their own history, separate from the text channel's.
+
+### How it works
+
+```
+you speak → Discord Opus stream → decoded to PCM → silence detected
+          → ElevenLabs speech-to-text → Claude → ElevenLabs text-to-speech → played back
+```
+
+One ElevenLabs key covers both directions, so listening needs no second
+provider. This is the pipeline Anthropic's own low-latency voice cookbook
+describes; expect roughly one and a half to two seconds end to end.
+
+The bot answers one person at a time and ignores audio while it's replying, so
+it never transcribes its own voice.
+
+### Tuning
+
+| Variable | Default | What it does |
+|---|---|---|
+| `VOICE_SILENCE_MS` | `1200` | Silence before an utterance counts as finished |
+| `VOICE_MIN_SECONDS` | `0.6` | Utterances shorter than this are ignored |
+| `ELEVENLABS_STT_MODEL` | `scribe_v1` | Transcription model |
+
+If it cuts you off mid-sentence, raise `VOICE_SILENCE_MS`. If it reacts to
+coughs and keyboard noise, raise `VOICE_MIN_SECONDS`.
+
+> **Voice needs ElevenLabs credits for both halves.** With the balance at zero
+> the bot still joins and listens, but transcription and speech both fail — you
+> get silence, and `[stt]` / `[voice]` errors in the logs.
+
+---
+
 > **`projects.json` is gitignored** (it holds repo URLs and can hold tokens), as is `repos/`. A malformed config makes the bot refuse to start rather than silently reverting to single-project mode.
 
 ---

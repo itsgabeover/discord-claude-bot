@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import { Client, GatewayIntentBits, Partials } from 'discord.js';
 import { handleMessage } from './handlers/message.js';
+import { handleVoiceStateUpdate } from './handlers/voice-state.js';
 import { cloneRepoIfNeeded } from './tools/git.js';
 import { allProjects } from './config.js';
 import { setDiscordClient } from './tools/index.js';
@@ -21,6 +22,10 @@ const client = new Client({
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.DirectMessages,
+    // Required to receive voiceStateUpdate and to read who is in a voice
+    // channel. Without it the bot cannot tell that anyone joined, so voice
+    // conversations never start.
+    GatewayIntentBits.GuildVoiceStates,
   ],
   partials: [Partials.Channel, Partials.Message],
 });
@@ -41,6 +46,7 @@ client.once('ready', () => {
 });
 
 client.on('messageCreate', handleMessage);
+client.on('voiceStateUpdate', handleVoiceStateUpdate);
 
 client.on('error', err => {
   console.error('[discord error]', err);

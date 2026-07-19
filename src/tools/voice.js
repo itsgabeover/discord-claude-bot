@@ -47,15 +47,34 @@ function voiceChannelFor(project) {
 }
 
 /**
- * Convert text to speech via ElevenLabs and play it in the user's voice channel.
- * Joins automatically, speaks, then disconnects.
+ * Strip markdown that sounds wrong read aloud, and cap length.
+ *
+ * Shared by the tool and the live voice session so both speak the same way —
+ * a code fence read character by character is unlistenable either way.
  */
-export async function speakInVoice(text, project) {
-  const voiceChannel = voiceChannelFor(project);
-  if (!voiceChannel) {
-    return 'The user is not in a voice channel right now — cannot speak.';
-  }
+export function forSpeech(text) {
+  const truncated = text.length > 4500
+    ? text.slice(0, 4500) + ' ... (truncated for voice)'
+    : text;
 
+  return truncated
+    .replace(/```[\s\S]*?```/g, '(code block)') // replace code blocks
+    .replace(/`([^`]+)`/g, '$1')                 // inline code → plain text
+    .replace(/\*\*(.+?)\*\*/g, '$1')             // bold
+    .replace(/\*(.+?)\*/g, '$1')                 // italic
+    .replace(/#{1,6}\s/g, '')                    // headers
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')    // links → link text only
+    .trim();
+}
+
+/**
+ * Turn text into speech audio. Returns a Buffer, or a string on failure.
+ *
+ * Split out from speakInVoice so the live voice session can synthesize without
+ * inheriting the tool's join-speak-disconnect lifecycle — a conversation needs
+ * the connection to stay open between utterances.
+ */
+export async function synthesize(text) {
   const apiKey  = process.env.ELEVENLABS_API_KEY;
   const voiceId = process.env.ELEVENLABS_VOICE_ID;
   const modelId = process.env.ELEVENLABS_MODEL_ID || 'eleven_flash_v2_5';
@@ -64,23 +83,9 @@ export async function speakInVoice(text, project) {
     return 'ElevenLabs is not configured. Set ELEVENLABS_API_KEY and ELEVENLABS_VOICE_ID.';
   }
 
-  // ElevenLabs free tier: 10k chars/month — truncate very long responses
-  const truncated = text.length > 4500
-    ? text.slice(0, 4500) + ' ... (truncated for voice)'
-    : text;
-
-  // Strip markdown that sounds weird when spoken
-  const spoken = truncated
-    .replace(/```[\s\S]*?```/g, '(code block)') // replace code blocks
-    .replace(/`([^`]+)`/g, '$1')                 // inline code → plain text
-    .replace(/\*\*(.+?)\*\*/g, '$1')             // bold
-    .replace(/\*(.+?)\*/g, '$1')                 // italic
-    .replace(/#{1,6}\s/g, '')                    // headers
-    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')    // links → link text only
-    .trim();
-
-  // Call ElevenLabs TTS
+  const spoken = forSpeech(text);
   console.log(`[voice] Requesting TTS for ${spoken.length} chars`);
+
   const res = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`, {
     method: 'POST',
     headers: {
@@ -91,10 +96,7 @@ export async function speakInVoice(text, project) {
     body: JSON.stringify({
       text: spoken,
       model_id: modelId,
-      voice_settings: {
-        stability: 0.5,
-        similarity_boost: 0.75,
-      },
+      voice_settings: { stability: 0.5, similarity_boost: 0.75 },
     }),
   });
 
@@ -103,14 +105,55 @@ export async function speakInVoice(text, project) {
     return `ElevenLabs error (${res.status}): ${errText}`;
   }
 
-  const audioBuffer = Buffer.from(await res.arrayBuffer());
-  console.log(`[voice] Got ${audioBuffer.length} bytes of audio`);
+  const buf = Buffer.from(await res.arrayBuffer());
+  console.log(`[voice] Got ${buf.length} bytes of audio`);
+  return buf;
+}
 
-  // Get or create voice connection
+/**
+ * Play an audio buffer on an existing connection and resolve when it finishes.
+ *
+ * Leaves the connection open — callers decide whether to disconnect. The
+ * three-minute ceiling is a backstop against a player that never reports Idle,
+ * which would otherwise hang the turn forever.
+ */
+export async function playOnConnection(connection, audioBuffer) {
+  const resource = createAudioResource(Readable.from(audioBuffer), {
+    inputType: StreamType.Arbitrary,
+  });
+  const player = createAudioPlayer();
+
+  connection.subscribe(player);
+  player.play(resource);
+
+  await new Promise(resolve => {
+    player.once(AudioPlayerStatus.Idle, resolve);
+    player.once('error', err => {
+      console.error('[voice] Player error:', err.message);
+      resolve();
+    });
+    setTimeout(resolve, 180_000);
+  });
+}
+
+/**
+ * Convert text to speech via ElevenLabs and play it in the user's voice channel.
+ * Joins automatically, speaks, then disconnects.
+ */
+export async function speakInVoice(text, project) {
+  const voiceChannel = voiceChannelFor(project);
+  if (!voiceChannel) {
+    return 'The user is not in a voice channel right now — cannot speak.';
+  }
+
+  const audio = await synthesize(text);
+  if (typeof audio === 'string') return audio; // configuration or API error
+
   const guildId = voiceChannel.guild.id;
   let connection = getVoiceConnection(guildId);
+  const joinedHere = !connection || connection.state.status === VoiceConnectionStatus.Destroyed;
 
-  if (!connection || connection.state.status === VoiceConnectionStatus.Destroyed) {
+  if (joinedHere) {
     connection = joinVoiceChannel({
       channelId: voiceChannel.id,
       guildId,
@@ -122,30 +165,20 @@ export async function speakInVoice(text, project) {
   try {
     await entersState(connection, VoiceConnectionStatus.Ready, 15_000);
   } catch (err) {
-    connection.destroy();
+    if (joinedHere) connection.destroy();
     return `Failed to connect to voice channel: ${err.message}`;
   }
 
-  // Play the MP3 audio (ffmpeg transcodes it to Opus for Discord)
-  const readable  = Readable.from(audioBuffer);
-  const resource  = createAudioResource(readable, { inputType: StreamType.Arbitrary });
-  const player    = createAudioPlayer();
+  await playOnConnection(connection, audio);
 
-  connection.subscribe(player);
-  player.play(resource);
-
-  // Wait for playback to finish (or timeout after 3 minutes)
-  await new Promise(resolve => {
-    player.once(AudioPlayerStatus.Idle, resolve);
-    player.once('error', err => {
-      console.error('[voice] Player error:', err.message);
-      resolve();
-    });
-    setTimeout(resolve, 180_000);
-  });
-
-  connection.destroy();
-  return `Spoke in voice channel "${voiceChannel.name}" and disconnected.`;
+  // Only tear down a connection this call opened. A live voice conversation
+  // owns its own connection and must survive the bot answering a question
+  // that happened to arrive by text.
+  if (joinedHere) {
+    connection.destroy();
+    return `Spoke in voice channel "${voiceChannel.name}" and disconnected.`;
+  }
+  return `Spoke in voice channel "${voiceChannel.name}".`;
 }
 
 /**
