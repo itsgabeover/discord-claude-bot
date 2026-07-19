@@ -8,6 +8,18 @@ function getGit() {
 }
 
 /**
+ * REPO_PATH on Render is an ephemeral temp directory that's wiped on every
+ * redeploy, so git identity can never be set once and persist — it has to
+ * be (re)configured locally in the repo on every fresh clone.
+ */
+async function ensureGitIdentity(git) {
+  const name = process.env.GIT_AUTHOR_NAME || 'Wublets Bot';
+  const email = process.env.GIT_AUTHOR_EMAIL || 'bot@wublets.com';
+  await git.addConfig('user.name', name, false, 'local');
+  await git.addConfig('user.email', email, false, 'local');
+}
+
+/**
  * Build the authenticated remote URL for pushing/cloning.
  * Uses GITHUB_TOKEN so Render can push without SSH keys.
  */
@@ -44,6 +56,7 @@ export async function cloneRepoIfNeeded() {
     console.log(`[git] Repo already exists at ${REPO_PATH} — pulling latest changes...`);
     try {
       const git = getGit();
+      await ensureGitIdentity(git);
       await git.pull();
       console.log('[git] Pull complete.');
     } catch (err) {
@@ -56,6 +69,7 @@ export async function cloneRepoIfNeeded() {
   try {
     const authUrl = getAuthenticatedUrl();
     await simpleGit().clone(authUrl, REPO_PATH);
+    await ensureGitIdentity(getGit());
     console.log('[git] Clone complete.');
   } catch (err) {
     console.error(`[git] Clone failed: ${err.message}`);
@@ -88,6 +102,7 @@ export async function gitCommit(message) {
       return 'Nothing to commit — working tree is clean.';
     }
 
+    await ensureGitIdentity(git);
     await git.add('.');
     const result = await git.commit(message);
 
