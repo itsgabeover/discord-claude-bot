@@ -2,9 +2,9 @@ import fs from 'fs/promises';
 import path from 'path';
 import { safeResolve } from './safe-path.js';
 
-export async function readFile(filePath) {
+export async function readFile(filePath, repoPath) {
   try {
-    const abs = safeResolve(filePath);
+    const abs = safeResolve(filePath, repoPath);
     const content = await fs.readFile(abs, 'utf-8');
     return `Contents of ${filePath}:\n\n${content}`;
   } catch (err) {
@@ -12,9 +12,9 @@ export async function readFile(filePath) {
   }
 }
 
-export async function writeFile(filePath, content) {
+export async function writeFile(filePath, content, repoPath) {
   try {
-    const abs = safeResolve(filePath);
+    const abs = safeResolve(filePath, repoPath);
     // Create parent directories if they don't exist
     await fs.mkdir(path.dirname(abs), { recursive: true });
     await fs.writeFile(abs, content, 'utf-8');
@@ -24,9 +24,9 @@ export async function writeFile(filePath, content) {
   }
 }
 
-export async function listDirectory(dirPath = '.') {
+export async function listDirectory(dirPath = '.', repoPath) {
   try {
-    const abs = safeResolve(dirPath);
+    const abs = safeResolve(dirPath, repoPath);
     const entries = await fs.readdir(abs, { withFileTypes: true });
 
     // Filter out noisy directories

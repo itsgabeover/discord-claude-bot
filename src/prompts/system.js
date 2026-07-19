@@ -1,7 +1,6 @@
 import fs from 'fs/promises';
 import path from 'path';
 
-const PROMPT_PATH = path.resolve(process.env.SYSTEM_PROMPT_PATH || './system-prompt.md');
 
 const GENERIC_DEFAULT = `You are a collaborative assistant living in a Discord server, helping a team build their project together.
 
@@ -20,19 +19,30 @@ Keep responses concise and Discord-friendly. Use code blocks for code. When you 
 
 To give this bot a personality and project-specific knowledge, copy system-prompt.example.md to system-prompt.md and fill it in.`;
 
-let _cached = null;
+// Cached per path, not globally: with several projects in one process a single
+// cache would serve whichever prompt happened to load first to every project —
+// exactly the leak this whole arrangement exists to prevent.
+const _cache = new Map();
 
-export async function getSystemPrompt() {
-  if (_cached) return _cached;
+/**
+ * Load a project's system prompt.
+ *
+ * @param {object} project - Resolved project config (see src/config.js)
+ */
+export async function getSystemPrompt(project) {
+  const promptPath = path.resolve(project.systemPromptPath);
+  if (_cache.has(promptPath)) return _cache.get(promptPath);
 
+  let prompt;
   try {
-    _cached = await fs.readFile(PROMPT_PATH, 'utf-8');
-    console.log(`[prompt] Loaded system prompt from ${PROMPT_PATH}`);
+    prompt = await fs.readFile(promptPath, 'utf-8');
+    console.log(`[prompt:${project.id}] Loaded system prompt from ${promptPath}`);
   } catch {
-    console.warn(`[prompt] No system-prompt.md found at ${PROMPT_PATH} — using generic default.`);
-    console.warn('[prompt] Copy system-prompt.example.md to system-prompt.md to customise.');
-    _cached = GENERIC_DEFAULT;
+    console.warn(`[prompt:${project.id}] No prompt file at ${promptPath} — using generic default.`);
+    console.warn('[prompt] Copy system-prompt.example.md and point the project at it.');
+    prompt = GENERIC_DEFAULT;
   }
 
-  return _cached;
+  _cache.set(promptPath, prompt);
+  return prompt;
 }

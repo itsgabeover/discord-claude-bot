@@ -1,12 +1,9 @@
 import { gdriveAppendDoc, findDocsByName } from './gdrive.js';
 
-const TODO_DOC_ID = process.env.TODO_DOC_ID;
-const TODO_DOC_NAME = process.env.TODO_DOC_NAME || 'todo';
-
-// Resolved doc ID, cached for the process lifetime so filing a task doesn't
-// cost a Drive lookup every time. Cleared only by a restart, which is the same
-// lifetime as the rest of the bot's state.
-let resolvedDocId = null;
+// Resolved doc IDs, cached per project so filing a task doesn't cost a Drive
+// lookup every time. Keyed by project id — two projects have different docs, and
+// a single shared variable would serve one project's doc to the other.
+const resolvedDocIds = new Map();
 
 /**
  * Work out which doc to append to.
@@ -19,13 +16,15 @@ let resolvedDocId = null;
  *
  * @returns {Promise<{id: string} | {error: string}>}
  */
-async function resolveTodoDoc() {
-  if (TODO_DOC_ID) return { id: TODO_DOC_ID };
-  if (resolvedDocId) return { id: resolvedDocId };
+async function resolveTodoDoc(project) {
+  if (project.todoDocId) return { id: project.todoDocId };
+  const cached = resolvedDocIds.get(project.id);
+  if (cached) return { id: cached };
 
+  const docName = project.todoDocName || 'todo';
   let matches;
   try {
-    matches = await findDocsByName(TODO_DOC_NAME);
+    matches = await findDocsByName(docName, project.driveFolderId);
   } catch (err) {
     return { error: `Could not search Drive for a todo doc: ${err.message}` };
   }
@@ -33,7 +32,7 @@ async function resolveTodoDoc() {
   if (matches.length === 0) {
     return {
       error:
-        `No Google Doc with "${TODO_DOC_NAME}" in its name was found in the Drive folder. ` +
+        `No Google Doc with "${docName}" in its name was found in the Drive folder. ` +
         'Create one (gdrive_create_doc works) and try again, or set TODO_DOC_ID. ' +
         'Tell the user the task was not saved — do not claim it was captured.',
     };
@@ -49,9 +48,9 @@ async function resolveTodoDoc() {
     };
   }
 
-  resolvedDocId = matches[0].id;
-  console.log(`[todo] using Drive doc "${matches[0].name}" (${resolvedDocId})`);
-  return { id: resolvedDocId };
+  resolvedDocIds.set(project.id, matches[0].id);
+  console.log(`[todo:${project.id}] using Drive doc "${matches[0].name}" (${matches[0].id})`);
+  return { id: matches[0].id };
 }
 
 /**
@@ -67,12 +66,12 @@ async function resolveTodoDoc() {
  * @param {string} [options.notes] - Context: what's involved, why it was deferred
  * @param {string} [options.requestedBy] - Who asked for it
  */
-export async function addTodo(task, { notes, requestedBy } = {}) {
+export async function addTodo(task, { notes, requestedBy } = {}, project) {
   if (!task || !task.trim()) {
     return 'Cannot add an empty todo — provide a one-line summary of the task.';
   }
 
-  const doc = await resolveTodoDoc();
+  const doc = await resolveTodoDoc(project);
   if (doc.error) return doc.error;
 
   const stamp = new Date().toISOString().slice(0, 10);
@@ -87,7 +86,7 @@ export async function addTodo(task, { notes, requestedBy } = {}) {
   if (typeof result === 'string' && /error/i.test(result)) {
     // A stale cached ID (doc deleted or renamed) should not poison every later
     // call — drop it so the next attempt re-resolves by name.
-    if (!TODO_DOC_ID) resolvedDocId = null;
+    if (!project.todoDocId) resolvedDocIds.delete(project.id);
     return `Failed to save the todo: ${result}`;
   }
   return `Added to the todo doc:\n${lines.join('\n')}`;

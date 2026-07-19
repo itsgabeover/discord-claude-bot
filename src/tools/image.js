@@ -90,6 +90,9 @@ function knockOutBackground(data, width, height, channels, tolerance) {
  *   transparent and trim to the subject. Forces webp/png, since jpg has no alpha.
  * @param {number} [options.background_tolerance] - How far a pixel may drift from
  *   the sampled backdrop and still count as background (default 22).
+ * @param {string} options.repoPath - Root of the project's checkout. Required —
+ *   with several projects in one process, a default would risk writing one
+ *   project's asset into another's repo.
  */
 export async function saveImageBuffer(buffer, outputPath, options = {}) {
   const {
@@ -100,7 +103,10 @@ export async function saveImageBuffer(buffer, outputPath, options = {}) {
     tint,
     remove_background = false,
     background_tolerance = 22,
+    repoPath,
   } = options;
+
+  if (!repoPath) return 'No project repo path was provided for the image output.';
 
   if (!SUPPORTED_FORMATS.includes(format)) {
     return `Unsupported format "${format}". Use one of: ${SUPPORTED_FORMATS.join(', ')}`;
@@ -166,7 +172,7 @@ export async function saveImageBuffer(buffer, outputPath, options = {}) {
 
   let fullPath;
   try {
-    fullPath = safeResolve(outputPath);
+    fullPath = safeResolve(outputPath, repoPath);
   } catch (err) {
     return err.message;
   }

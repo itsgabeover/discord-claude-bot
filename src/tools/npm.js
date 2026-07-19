@@ -2,7 +2,6 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 
 const execAsync = promisify(exec);
-const REPO_PATH = process.env.REPO_PATH || './repo';
 
 // Only these commands are allowed. Claude cannot run arbitrary shell commands.
 const ALLOWED_PATTERNS = [
@@ -22,7 +21,7 @@ const MAX_OUTPUT_CHARS = 4000;
  * Run a whitelisted npm command in the website repo directory.
  * Returns stdout/stderr so Claude can see errors and fix them.
  */
-export async function runNpm(command) {
+export async function runNpm(command, repoPath) {
   const trimmed = command.trim();
 
   const allowed = ALLOWED_PATTERNS.some(pattern => pattern.test(trimmed));
@@ -43,7 +42,7 @@ export async function runNpm(command) {
 
   try {
     const { stdout, stderr } = await execAsync(trimmed, {
-      cwd: REPO_PATH,
+      cwd: repoPath,
       timeout: 120_000, // 2 minutes max
       env: { ...process.env, FORCE_COLOR: '0' }, // no ANSI codes in output
     });

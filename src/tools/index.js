@@ -65,9 +65,9 @@ const PACKS = {
       },
     ],
     handlers: {
-      read_file: (i) => readFile(i.path),
-      write_file: (i) => writeFile(i.path, i.content),
-      list_directory: (i) => listDirectory(i.path || '.'),
+      read_file: (i, p) => readFile(i.path, p.repoPath),
+      write_file: (i, p) => writeFile(i.path, i.content, p.repoPath),
+      list_directory: (i, p) => listDirectory(i.path || '.', p.repoPath),
     },
   },
 
@@ -114,11 +114,11 @@ const PACKS = {
       },
     ],
     handlers: {
-      git_status: () => gitStatus(),
-      git_commit: (i) => gitCommit(i.message),
-      git_push: () => gitPush(),
-      git_pull: () => gitPull(),
-      git_log: (i) => gitLog(i.limit),
+      git_status: (i, p) => gitStatus(p),
+      git_commit: (i, p) => gitCommit(i.message, p),
+      git_push: (i, p) => gitPush(p),
+      git_pull: (i, p) => gitPull(p),
+      git_log: (i, p) => gitLog(i.limit, p),
     },
   },
 
@@ -139,7 +139,7 @@ const PACKS = {
       },
     ],
     handlers: {
-      run_npm: (i) => runNpm(i.command),
+      run_npm: (i, p) => runNpm(i.command, p.repoPath),
     },
   },
 
@@ -202,7 +202,8 @@ const PACKS = {
     ],
     handlers: {
       inspect_image: (i) => inspectImage(i.url),
-      process_image: (i) => processImage(i.url, i.output_path, {
+      process_image: (i, p) => processImage(i.url, i.output_path, {
+        repoPath: p.repoPath,
         width: i.width,
         height: i.height,
         format: i.format,
@@ -279,11 +280,12 @@ const PACKS = {
       },
     ],
     handlers: {
-      gdrive_list: () => gdriveList(),
+      gdrive_list: (i, p) => gdriveList(p.driveFolderId),
       gdrive_read: (i) => gdriveRead(i.file_id),
-      gdrive_create_doc: (i) => gdriveCreateDoc(i.name, i.content),
+      gdrive_create_doc: (i, p) => gdriveCreateDoc(i.name, i.content, p.driveFolderId),
       gdrive_append_doc: (i) => gdriveAppendDoc(i.file_id, i.content),
-      gdrive_process_image: (i) => gdriveProcessImage(i.file_id, i.output_path, {
+      gdrive_process_image: (i, p) => gdriveProcessImage(i.file_id, i.output_path, {
+        repoPath: p.repoPath,
         width: i.width,
         height: i.height,
         format: i.format,
@@ -320,7 +322,7 @@ const PACKS = {
       },
     ],
     handlers: {
-      add_todo: (i) => addTodo(i.task, { notes: i.notes, requestedBy: i.requested_by }),
+      add_todo: (i, p) => addTodo(i.task, { notes: i.notes, requestedBy: i.requested_by }, p),
     },
   },
 
@@ -391,68 +393,85 @@ const PACKS = {
 const ALL_PACKS = Object.keys(PACKS);
 
 /**
- * Resolve which packs to load from ENABLED_TOOL_PACKS (comma-separated).
- * Unset means every pack, so existing deployments keep working untouched.
+ * Resolve a project's pack list. `null`/empty means every pack, so a project
+ * that doesn't care about packs behaves the way the bot did before they existed.
  */
-function resolveEnabledPacks() {
-  const raw = process.env.ENABLED_TOOL_PACKS;
-  if (!raw || !raw.trim()) return ALL_PACKS;
+function resolvePacks(project) {
+  const requested = project.toolPacks;
+  if (!requested || !requested.length) return ALL_PACKS;
 
-  const requested = raw.split(',').map((s) => s.trim()).filter(Boolean);
   const unknown = requested.filter((p) => !ALL_PACKS.includes(p));
   if (unknown.length) {
     console.warn(
-      `[tools] Ignoring unknown pack(s) in ENABLED_TOOL_PACKS: ${unknown.join(', ')}. ` +
+      `[tools:${project.id}] Ignoring unknown pack(s): ${unknown.join(', ')}. ` +
         `Available: ${ALL_PACKS.join(', ')}`,
     );
   }
 
   const enabled = requested.filter((p) => ALL_PACKS.includes(p));
   if (!enabled.length) {
-    console.warn('[tools] ENABLED_TOOL_PACKS matched no known packs — loading all packs instead.');
+    console.warn(`[tools:${project.id}] No known packs matched — loading all packs.`);
     return ALL_PACKS;
+  }
+
+  if (enabled.includes('todo') && !enabled.includes('gdrive')) {
+    console.warn(
+      `[tools:${project.id}] The 'todo' pack needs 'gdrive' to store tasks — ` +
+        'add_todo will fail at call time.',
+    );
   }
   return enabled;
 }
 
-const enabledPacks = resolveEnabledPacks();
+// Built once per project rather than per request: the definitions are identical
+// on every call, and a stable array keeps the prompt prefix byte-identical,
+// which is what makes it cacheable.
+const perProject = new Map();
 
-// The todo tool writes through Google Drive, so it can't work without that pack.
-// Fail loudly at startup rather than at the moment someone tries to file a task.
-if (enabledPacks.includes('todo') && !enabledPacks.includes('gdrive')) {
-  console.warn(
-    "[tools] The 'todo' pack needs the 'gdrive' pack to store tasks — add gdrive to " +
-      'ENABLED_TOOL_PACKS, or add_todo will fail at call time.',
+function build(project) {
+  const packs = resolvePacks(project);
+  const tools = packs.flatMap((p) => PACKS[p].tools);
+  const handlers = Object.assign({}, ...packs.map((p) => PACKS[p].handlers));
+  console.log(
+    `[tools:${project.id}] ${tools.length} tools from ${packs.length} pack(s): ${packs.join(', ')}`,
   );
+  return { packs, tools, handlers };
 }
 
-/** Tool definitions sent to Claude on every request. */
-export const toolDefinitions = enabledPacks.flatMap((p) => PACKS[p].tools);
+function forProject(project) {
+  let built = perProject.get(project.id);
+  if (!built) {
+    built = build(project);
+    perProject.set(project.id, built);
+  }
+  return built;
+}
 
-const handlers = Object.assign({}, ...enabledPacks.map((p) => PACKS[p].handlers));
+/** Tool definitions to send to Claude for this project. */
+export function getToolDefinitions(project) {
+  return forProject(project).tools;
+}
 
-console.log(
-  `[tools] ${toolDefinitions.length} tools from ${enabledPacks.length} pack(s): ${enabledPacks.join(', ')}`,
-);
-
-/** Names and descriptions of every pack, enabled or not — for docs and debugging. */
-export function listPacks() {
+/** Names and descriptions of every pack — for docs and debugging. */
+export function listPacks(project) {
+  const enabled = project ? forProject(project).packs : ALL_PACKS;
   return ALL_PACKS.map((name) => ({
     name,
     description: PACKS[name].description,
     toolCount: PACKS[name].tools.length,
-    enabled: enabledPacks.includes(name),
+    enabled: enabled.includes(name),
   }));
 }
 
-/** Route a tool call from Claude to the right function. */
-export async function executeTool(name, input) {
+/** Route a tool call from Claude to the right function, scoped to a project. */
+export async function executeTool(name, input, project) {
+  const { handlers } = forProject(project);
   const handler = handlers[name];
   if (!handler) {
     const owner = ALL_PACKS.find((p) => PACKS[p].handlers[name]);
     return owner
-      ? `Tool "${name}" is in the "${owner}" pack, which is not enabled on this deployment.`
+      ? `Tool "${name}" is in the "${owner}" pack, which is not enabled for this project.`
       : `Unknown tool: ${name}`;
   }
-  return handler(input);
+  return handler(input, project);
 }

@@ -240,6 +240,42 @@ That's it. No code changes needed. The bot loads the file on startup and uses it
 
 ---
 
+## Running several projects from one bot
+
+By default the bot serves one project: one system prompt, one repo, one Drive folder, everything from `.env`. It responds in every server it's in.
+
+To serve **different projects in different Discord servers** from a single process, copy `projects.example.json` to `projects.json` and map each guild ID to its own config:
+
+```json
+{
+  "projects": {
+    "website": {
+      "guildId": "111111111111111111",
+      "systemPromptPath": "./prompts/website.md",
+      "repoUrl": "https://github.com/yourname/website",
+      "driveFolderId": "abc123",
+      "toolPacks": ["files", "git", "npm", "media", "gdrive", "todo"]
+    },
+    "game": {
+      "guildId": "222222222222222222",
+      "systemPromptPath": "./prompts/game.md",
+      "repoUrl": "https://github.com/yourname/game",
+      "toolPacks": ["files", "git", "web"]
+    }
+  }
+}
+```
+
+Each project gets its own **prompt**, **repo checkout** (cloned into `repos/<key>/`), **Drive folder**, **todo doc**, and **tool packs**. Anything you omit falls back to the matching environment variable, so shared settings like `GITHUB_TOKEN` and `GIT_AUTHOR_EMAIL` can stay in `.env`.
+
+**Guilds not listed get no response.** That's deliberate: falling back to a default would mean any server the bot is invited to inherits that project's system prompt and push credentials. The bot replies that it isn't configured for that server, and does nothing else.
+
+The isolation is enforced, not just conventional — file tools resolve paths against their own project's checkout, so one project cannot read or write another's files even with `../` or an absolute path.
+
+> **`projects.json` is gitignored** (it holds repo URLs and can hold tokens), as is `repos/`. A malformed config makes the bot refuse to start rather than silently reverting to single-project mode.
+
+---
+
 ## Tool packs
 
 Tools are grouped into **packs** so a deployment can load only what its project needs:

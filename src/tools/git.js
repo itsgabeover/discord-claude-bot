@@ -1,10 +1,8 @@
 import simpleGit from 'simple-git';
 import fs from 'fs/promises';
 
-const REPO_PATH = process.env.REPO_PATH || './repo';
-
-function getGit() {
-  return simpleGit(REPO_PATH);
+function getGit(project) {
+  return simpleGit(project.repoPath);
 }
 
 /**
@@ -21,9 +19,9 @@ function getGit() {
  * There is deliberately no default: committing as whoever the author happened
  * to hardcode is worse than a clear error at startup.
  */
-async function ensureGitIdentity(git) {
-  const name = process.env.GIT_AUTHOR_NAME || 'Claude Bot';
-  const email = process.env.GIT_AUTHOR_EMAIL;
+async function ensureGitIdentity(git, project) {
+  const name = project.gitAuthorName || 'Claude Bot';
+  const email = project.gitAuthorEmail;
   if (!email) {
     throw new Error(
       'GIT_AUTHOR_EMAIL is not set. Set it to a verified email on the GitHub ' +
@@ -38,11 +36,11 @@ async function ensureGitIdentity(git) {
  * Build the authenticated remote URL for pushing/cloning.
  * Uses GITHUB_TOKEN so Render can push without SSH keys.
  */
-function getAuthenticatedUrl() {
-  const url = process.env.GITHUB_REPO_URL;
-  const token = process.env.GITHUB_TOKEN;
-  if (!url) throw new Error('GITHUB_REPO_URL is not set in .env');
-  if (!token) throw new Error('GITHUB_TOKEN is not set in .env');
+function getAuthenticatedUrl(project) {
+  const url = project.repoUrl;
+  const token = project.githubToken;
+  if (!url) throw new Error(`No repoUrl configured for project "${project.id}"`);
+  if (!token) throw new Error(`No githubToken configured for project "${project.id}"`);
 
   // Insert token into URL: https://TOKEN@github.com/user/repo.git
   return url.replace('https://', `https://${token}@`);
@@ -52,26 +50,26 @@ function getAuthenticatedUrl() {
  * Called on bot startup. Clones the repo if REPO_PATH doesn't exist yet,
  * or pulls the latest changes if it's already there.
  */
-export async function cloneRepoIfNeeded() {
-  const repoUrl = process.env.GITHUB_REPO_URL;
+export async function cloneRepoIfNeeded(project) {
+  const repoUrl = project.repoUrl;
   if (!repoUrl) {
-    console.log('[git] GITHUB_REPO_URL not set — skipping repo clone. File tools will use REPO_PATH as-is.');
+    console.log(`[git:${project.id}] No repoUrl — skipping clone; file tools use repoPath as-is.`);
     return;
   }
 
   let exists = false;
   try {
-    await fs.access(REPO_PATH);
+    await fs.access(project.repoPath);
     exists = true;
   } catch {
     exists = false;
   }
 
   if (exists) {
-    console.log(`[git] Repo already exists at ${REPO_PATH} — pulling latest changes...`);
+    console.log(`[git:${project.id}] Repo exists at ${project.repoPath} — pulling...`);
     try {
-      const git = getGit();
-      await ensureGitIdentity(git);
+      const git = getGit(project);
+      await ensureGitIdentity(git, project);
       await git.pull();
       console.log('[git] Pull complete.');
     } catch (err) {
@@ -80,11 +78,11 @@ export async function cloneRepoIfNeeded() {
     return;
   }
 
-  console.log(`[git] Cloning ${repoUrl} into ${REPO_PATH}...`);
+  console.log(`[git:${project.id}] Cloning ${repoUrl} into ${project.repoPath}...`);
   try {
-    const authUrl = getAuthenticatedUrl();
-    await simpleGit().clone(authUrl, REPO_PATH);
-    await ensureGitIdentity(getGit());
+    const authUrl = getAuthenticatedUrl(project);
+    await simpleGit().clone(authUrl, project.repoPath);
+    await ensureGitIdentity(getGit(project), project);
     console.log('[git] Clone complete.');
   } catch (err) {
     console.error(`[git] Clone failed: ${err.message}`);
@@ -92,9 +90,9 @@ export async function cloneRepoIfNeeded() {
   }
 }
 
-export async function gitStatus() {
+export async function gitStatus(project) {
   try {
-    const git = getGit();
+    const git = getGit(project);
     const status = await git.status();
 
     if (status.files.length === 0) {
@@ -108,16 +106,16 @@ export async function gitStatus() {
   }
 }
 
-export async function gitCommit(message) {
+export async function gitCommit(message, project) {
   try {
-    const git = getGit();
+    const git = getGit(project);
     const status = await git.status();
 
     if (status.files.length === 0) {
       return 'Nothing to commit — working tree is clean.';
     }
 
-    await ensureGitIdentity(git);
+    await ensureGitIdentity(git, project);
     await git.add('.');
     const result = await git.commit(message);
 
@@ -127,14 +125,14 @@ export async function gitCommit(message) {
   }
 }
 
-export async function gitPush() {
+export async function gitPush(project) {
   try {
-    const git = getGit();
+    const git = getGit(project);
     const status = await git.status();
     const branch = status.current;
 
     // Set the authenticated remote before pushing
-    const authUrl = getAuthenticatedUrl();
+    const authUrl = getAuthenticatedUrl(project);
     await git.remote(['set-url', 'origin', authUrl]);
     await git.push('origin', branch);
 
@@ -144,9 +142,9 @@ export async function gitPush() {
   }
 }
 
-export async function gitPull() {
+export async function gitPull(project) {
   try {
-    const git = getGit();
+    const git = getGit(project);
     const result = await git.pull();
 
     if (result.files.length === 0) {
@@ -159,9 +157,9 @@ export async function gitPull() {
   }
 }
 
-export async function gitLog(limit = 5) {
+export async function gitLog(limit = 5, project) {
   try {
-    const git = getGit();
+    const git = getGit(project);
     const log = await git.log({ maxCount: limit });
     const lines = log.all.map(c => `• ${c.hash.slice(0, 7)} — ${c.message} (${c.author_name})`);
     return `Recent commits:\n${lines.join('\n')}`;

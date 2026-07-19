@@ -2,7 +2,6 @@ import { google } from 'googleapis';
 import fs from 'fs/promises';
 import { saveImageBuffer } from './image.js';
 
-const FOLDER_ID = process.env.GOOGLE_DRIVE_FOLDER_ID;
 const CREDENTIALS_PATH = process.env.GOOGLE_CREDENTIALS_PATH || './google-credentials.json';
 
 let driveClient = null;
@@ -42,13 +41,13 @@ async function getClients() {
  * @returns {Promise<Array<{id: string, name: string}>>} Matches, newest first
  * @throws {Error} If the folder isn't configured or the Drive call fails
  */
-export async function findDocsByName(needle) {
-  if (!FOLDER_ID) throw new Error('GOOGLE_DRIVE_FOLDER_ID is not set');
+export async function findDocsByName(needle, folderId) {
+  if (!folderId) throw new Error('No Google Drive folder configured for this project');
   const { drive } = await getClients();
 
   const res = await drive.files.list({
     q: [
-      `'${FOLDER_ID}' in parents`,
+      `'${folderId}' in parents`,
       'trashed = false',
       "mimeType = 'application/vnd.google-apps.document'",
     ].join(' and '),
@@ -63,13 +62,13 @@ export async function findDocsByName(needle) {
   return (res.data.files || []).filter((f) => f.name.toLowerCase().includes(lower));
 }
 
-export async function gdriveList() {
+export async function gdriveList(folderId) {
   try {
-    if (!FOLDER_ID) return 'GOOGLE_DRIVE_FOLDER_ID is not set in .env';
+    if (!folderId) return 'No Google Drive folder is configured for this project.';
     const { drive } = await getClients();
 
     const res = await drive.files.list({
-      q: `'${FOLDER_ID}' in parents and trashed = false`,
+      q: `'${folderId}' in parents and trashed = false`,
       fields: 'files(id, name, mimeType, modifiedTime)',
       orderBy: 'modifiedTime desc',
       pageSize: 50,
@@ -158,9 +157,9 @@ export async function gdriveProcessImage(fileId, outputPath, options = {}) {
 /**
  * Create a new Google Doc in the configured Drive folder with the given content.
  */
-export async function gdriveCreateDoc(name, content) {
+export async function gdriveCreateDoc(name, content, folderId) {
   try {
-    if (!FOLDER_ID) return 'GOOGLE_DRIVE_FOLDER_ID is not set in .env';
+    if (!folderId) return 'No Google Drive folder is configured for this project.';
     const { drive, docs } = await getClients();
 
     // Create the empty doc in the right folder
@@ -168,7 +167,7 @@ export async function gdriveCreateDoc(name, content) {
       requestBody: {
         name,
         mimeType: 'application/vnd.google-apps.document',
-        parents: [FOLDER_ID],
+        parents: [folderId],
       },
       fields: 'id, name, webViewLink',
     });

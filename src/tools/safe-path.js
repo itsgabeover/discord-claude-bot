@@ -1,7 +1,5 @@
 import path from 'path';
 
-const REPO_PATH = process.env.REPO_PATH || '.';
-
 /**
  * Resolve a caller-supplied path, guaranteeing it stays inside the repo root.
  *
@@ -12,11 +10,14 @@ const REPO_PATH = process.env.REPO_PATH || '.';
  * root itself allowed as an explicit special case.
  *
  * @param {string} filePath - Untrusted path, relative to the repo root
- * @param {string} [root] - Override the root (defaults to REPO_PATH)
+ * @param {string} root - The project's repo root. Required: with several projects
+ *   in one process there is no single correct default, and guessing one could
+ *   resolve a path against the wrong project's checkout.
  * @returns {string} Absolute path, guaranteed within the root
  * @throws {Error} If the path escapes the root
  */
-export function safeResolve(filePath, root = REPO_PATH) {
+export function safeResolve(filePath, root) {
+  if (!root) throw new Error('safeResolve requires an explicit repo root.');
   const absRoot = path.resolve(root);
   const resolved = path.resolve(absRoot, filePath);
 

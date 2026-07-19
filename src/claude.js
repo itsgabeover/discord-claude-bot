@@ -1,5 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk';
-import { toolDefinitions, executeTool } from './tools/index.js';
+import { getToolDefinitions, executeTool } from './tools/index.js';
 import { getSystemPrompt } from './prompts/system.js';
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
@@ -54,7 +54,7 @@ function withCacheBreakpoint(messages) {
  * follow-up prompts. `tools` is omitted so this call can't chain further
  * tool use; it's forced to answer in text.
  */
-async function summarizeIncompleteTask(history, reason, tokensSoFar) {
+async function summarizeIncompleteTask(history, reason, tokensSoFar, project) {
   try {
     history.push({
       role: 'user',
@@ -67,7 +67,7 @@ async function summarizeIncompleteTask(history, reason, tokensSoFar) {
     const response = await client.messages.create({
       model: MODEL,
       max_tokens: 1024,
-      system: await getSystemPrompt(),
+      system: await getSystemPrompt(project),
       messages: history,
     });
 
@@ -108,7 +108,7 @@ export function getHistoryLength(channelId) {
  *   local bookkeeping over data the loop already has — doesn't add API calls.
  * @returns {Promise<string>} Claude's final text response
  */
-export async function chat(channelId, text, images = [], username = 'User', onToolCall) {
+export async function chat(project, channelId, text, images = [], username = 'User', onToolCall) {
   if (!histories.has(channelId)) {
     histories.set(channelId, []);
   }
@@ -143,10 +143,11 @@ export async function chat(channelId, text, images = [], username = 'User', onTo
   // internally, but pinning it here also guarantees the prompt can't change
   // mid-turn — a single changed byte would invalidate the cache for every
   // remaining iteration of this loop.
-  const systemPrompt = await getSystemPrompt();
+  const systemPrompt = await getSystemPrompt(project);
+  const toolDefinitions = getToolDefinitions(project);
 
   while (toolCallCount < MAX_TOOL_CALLS && totalTokens < MAX_TOKENS_PER_TURN) {
-    console.log(`[claude] channel=${channelId} sending ${history.length} messages to Claude`);
+    console.log(`[claude:${project.id}] channel=${channelId} sending ${history.length} messages to Claude`);
     const response = await client.messages.create({
       model: MODEL,
       max_tokens: 4096,
@@ -182,7 +183,7 @@ export async function chat(channelId, text, images = [], username = 'User', onTo
     // prompt would stop being counted at all.
     totalTokens += input_tokens + cacheWrite + cacheRead + output_tokens;
     console.log(
-      `[claude] channel=${channelId} usage: +${input_tokens} in / +${output_tokens} out / ` +
+      `[claude:${project.id}] channel=${channelId} usage: +${input_tokens} in / +${output_tokens} out / ` +
         `cache ${cacheRead} read, ${cacheWrite} written (${totalTokens} total this turn)`,
     );
 
@@ -220,7 +221,7 @@ export async function chat(channelId, text, images = [], username = 'User', onTo
         if (onToolCall) {
           try { onToolCall(block.name, block.input); } catch { /* progress display is best-effort */ }
         }
-        const result = await executeTool(block.name, block.input);
+        const result = await executeTool(block.name, block.input, project);
 
         toolResults.push({
           type: 'tool_result',
@@ -239,10 +240,10 @@ export async function chat(channelId, text, images = [], username = 'User', onTo
   }
 
   if (toolCallCount >= MAX_TOOL_CALLS) {
-    return summarizeIncompleteTask(history, 'tool call limit', totalTokens);
+    return summarizeIncompleteTask(history, 'tool call limit', totalTokens, project);
   }
   if (totalTokens >= MAX_TOKENS_PER_TURN) {
-    return summarizeIncompleteTask(history, 'token budget for this turn', totalTokens);
+    return summarizeIncompleteTask(history, 'token budget for this turn', totalTokens, project);
   }
   return '*(unexpected end of response)*' + usageFooter(totalTokens);
 }

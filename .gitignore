@@ -4,3 +4,7 @@ google-credentials.json
 system-prompt.md
 *.log
 .DS_Store
+
+# per-project config — may contain repo URLs and tokens
+projects.json
+/repos/

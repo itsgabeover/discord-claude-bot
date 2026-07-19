@@ -1,5 +1,7 @@
 import { chat, clearHistory, getHistoryLength } from '../claude.js';
 import { setVoiceChannel } from '../tools/index.js';
+import { getProjectForGuild, isMultiProject } from '../config.js';
+
 
 const ALLOWED_CHANNEL_IDS = process.env.ALLOWED_CHANNEL_IDS
   ? process.env.ALLOWED_CHANNEL_IDS.split(',').map(id => id.trim())
@@ -102,8 +104,24 @@ export async function handleMessage(message) {
   const isMentioned = message.mentions.has(message.client.user);
   if (!isMentioned) return;
 
-  // Optional: restrict to specific channels
-  if (ALLOWED_CHANNEL_IDS && !ALLOWED_CHANNEL_IDS.includes(message.channelId)) return;
+  // Which project does this server belong to? In multi-project mode an
+  // unconfigured guild gets nothing — the bot must never fall back to some
+  // other project's prompt, repo, or push credentials just because it happens
+  // to have been invited somewhere.
+  const project = getProjectForGuild(message.guildId);
+  if (!project) {
+    console.warn(`[msg] Ignoring mention from unconfigured guild ${message.guildId}`);
+    if (isMultiProject()) {
+      await message.reply(
+        "I'm not configured for this server yet — add it to `projects.json` and restart me.",
+      );
+    }
+    return;
+  }
+
+  // Optional: restrict to specific channels (per project, falling back to env)
+  const allowedChannels = project.allowedChannelIds ?? ALLOWED_CHANNEL_IDS;
+  if (allowedChannels && !allowedChannels.includes(message.channelId)) return;
 
   // Strip the @mention from the message text
   let text = message.content
@@ -166,6 +184,7 @@ export async function handleMessage(message) {
 
   try {
     const response = await chat(
+      project,
       message.channelId,
       (text || '(image shared — no text)') + voiceNote,
       images,

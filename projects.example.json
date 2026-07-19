@@ -1,0 +1,37 @@
+{
+  "_comment": [
+    "Copy to projects.json to run several projects from one bot process.",
+    "Each entry binds a Discord guild (server) ID to its own prompt, repo, Drive",
+    "folder, and tool packs. Guilds not listed here get NO response — the bot never",
+    "falls back to another project's configuration.",
+    "",
+    "Delete this file (or don't create projects.json) to stay in single-project",
+    "mode, where everything comes from environment variables.",
+    "",
+    "Anything you omit falls back to the matching environment variable, so shared",
+    "settings like githubToken and gitAuthorEmail can stay in .env.",
+    "",
+    "To get a guild ID: enable Developer Mode in Discord, right-click the server",
+    "name, then 'Copy Server ID'."
+  ],
+
+  "projects": {
+    "website": {
+      "guildId": "111111111111111111",
+      "name": "Marketing Site",
+      "systemPromptPath": "./prompts/website.md",
+      "repoUrl": "https://github.com/yourname/website",
+      "driveFolderId": "your_drive_folder_id",
+      "toolPacks": ["files", "git", "npm", "web", "media", "gdrive", "todo"],
+      "todoDocName": "todo"
+    },
+
+    "game": {
+      "guildId": "222222222222222222",
+      "name": "Game Project",
+      "systemPromptPath": "./prompts/game.md",
+      "repoUrl": "https://github.com/yourname/game",
+      "toolPacks": ["files", "git", "web"]
+    }
+  }
+}
