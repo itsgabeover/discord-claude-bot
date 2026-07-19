@@ -73,11 +73,16 @@ export async function chat(channelId, text, images = [], username = 'User') {
     // Add Claude's response to history
     history.push({ role: 'assistant', content: response.content });
 
-    // Trim history if it's getting too long
+    // Trim history if it's getting too long.
+    // Mutate in place (rather than histories.set) so the `history` reference
+    // used for the rest of this call stays the same array as the one stored
+    // in the Map — otherwise a trim mid-tool-call detaches the two, and the
+    // tool_result push below lands on the array nobody reads anymore.
     if (history.length > MAX_HISTORY * 2) {
       // Keep the first message for context, trim the middle
       const trimmed = [history[0], ...history.slice(-(MAX_HISTORY * 2 - 1))];
-      histories.set(channelId, trimmed);
+      history.length = 0;
+      history.push(...trimmed);
     }
 
     if (response.stop_reason === 'end_turn') {
