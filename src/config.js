@@ -75,6 +75,7 @@ function resolveEntry(key, entry, base) {
   // unquoted in JSON they parse as Numbers and lose precision, so "...857" can
   // come back as "...860" and silently match nothing.
   const channelIds = parsePacks(entry.channelIds)?.map(String) ?? null;
+  const voiceChannelIds = parsePacks(entry.voiceChannelIds)?.map(String) ?? null;
 
   const repoPath = entry.repoPath
     ? path.resolve(entry.repoPath)
@@ -100,6 +101,7 @@ function resolveEntry(key, entry, base) {
     todoDocId: entry.todoDocId ?? base.todoDocId,
     todoDocName: entry.todoDocName ?? base.todoDocName,
     channelIds,
+    voiceChannelIds,
     // A channel-scoped project is by definition allowed in the channels that
     // route to it, so its routing list doubles as its allowlist. Without this,
     // an env-level ALLOWED_CHANNEL_IDS set for some other purpose would block
@@ -141,6 +143,9 @@ function load() {
   // server's fallback.
   const byGuild = new Map();
   const byChannel = new Map();
+  // Voice channels route separately from text: a server can have social voice
+  // channels that belong to no project, and those must stay unclaimed.
+  const byVoiceChannel = new Map();
 
   for (const [key, entry] of entries) {
     if (!entry.guildId) {
@@ -172,6 +177,17 @@ function load() {
       byGuild.set(resolved.guildId, resolved);
     }
 
+    for (const voiceId of resolved.voiceChannelIds ?? []) {
+      const owner = byVoiceChannel.get(voiceId);
+      if (owner) {
+        throw new Error(
+          `[config] Voice channel ${voiceId} is claimed by both ` +
+            `"${owner.id}" and "${key}". A voice channel maps to one project.`,
+        );
+      }
+      byVoiceChannel.set(voiceId, resolved);
+    }
+
     projects.push(resolved);
   }
 
@@ -186,7 +202,7 @@ function load() {
         })
         .join(', '),
   );
-  return { multi: true, projects, byGuild, byChannel };
+  return { multi: true, projects, byGuild, byChannel, byVoiceChannel };
 }
 
 const state = load();
@@ -222,6 +238,27 @@ export function getProjectForChannel(guildId, channelId) {
 
   if (!guildId) return null;
   return state.byGuild.get(String(guildId)) || null;
+}
+
+/**
+ * Resolve the project that owns a voice channel.
+ *
+ * Deliberately has no guild-default fallback, unlike the text lookup. A text
+ * message is an explicit request; joining a voice channel is not, so the bot
+ * only ever appears in channels named in voiceChannelIds. Otherwise it would
+ * drop into every social call in the server.
+ *
+ * @param {string|null} voiceChannelId
+ * @returns {object|null} The project, or null if this channel isn't mapped
+ */
+export function getProjectForVoiceChannel(voiceChannelId) {
+  if (!state.multi) {
+    // Single-project mode has no config file to opt in with, so voice presence
+    // stays off rather than joining every channel by default.
+    return null;
+  }
+  if (!voiceChannelId) return null;
+  return state.byVoiceChannel.get(String(voiceChannelId)) || null;
 }
 
 /**
