@@ -1,6 +1,6 @@
 import { readFile, writeFile, listDirectory } from './filesystem.js';
 import { gitStatus, gitCommit, gitPush, gitPull, gitLog } from './git.js';
-import { gdriveList, gdriveRead, gdriveCreateDoc, gdriveAppendDoc } from './gdrive.js';
+import { gdriveList, gdriveRead, gdriveCreateDoc, gdriveAppendDoc, gdriveProcessImage } from './gdrive.js';
 import { listChannels, sendToChannel } from './discord-send.js';
 import { processImage, inspectImage } from './image.js';
 import { webSearch } from './web.js';
@@ -129,6 +129,22 @@ export const toolDefinitions = [
       required: ['file_id', 'content'],
     },
   },
+  {
+    name: 'gdrive_process_image',
+    description: "Download an image file from the Wublets Drive folder, resize it, convert its format, and save it into the website repo's public folder. Use gdrive_list first to find the file's ID. Recommended format: webp.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        file_id: { type: 'string', description: 'File ID from gdrive_list results.' },
+        output_path: { type: 'string', description: 'Where to save it in the repo, e.g. "public/images/patch.webp"' },
+        width: { type: 'number', description: 'Max width in pixels (optional, preserves aspect ratio).' },
+        height: { type: 'number', description: 'Max height in pixels (optional, preserves aspect ratio).' },
+        format: { type: 'string', description: 'Output format: webp (default), png, jpg, avif.' },
+        quality: { type: 'number', description: 'Quality 1–100 (default 85).' },
+      },
+      required: ['file_id', 'output_path'],
+    },
+  },
 
   // ── Discord ───────────────────────────────────────────────────────────────
   {
@@ -247,6 +263,12 @@ export async function executeTool(name, input) {
     case 'gdrive_read':       return gdriveRead(input.file_id);
     case 'gdrive_create_doc': return gdriveCreateDoc(input.name, input.content);
     case 'gdrive_append_doc': return gdriveAppendDoc(input.file_id, input.content);
+    case 'gdrive_process_image': return gdriveProcessImage(input.file_id, input.output_path, {
+                                width: input.width,
+                                height: input.height,
+                                format: input.format,
+                                quality: input.quality,
+                              });
     case 'list_channels':     return listChannels();
     case 'send_to_channel':   return sendToChannel(input.channel_id, input.message);
     case 'inspect_image':     return inspectImage(input.url);

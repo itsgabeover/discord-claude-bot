@@ -6,11 +6,23 @@ const REPO_PATH = process.env.REPO_PATH || './repo';
 
 const SUPPORTED_FORMATS = ['webp', 'png', 'jpg', 'jpeg', 'avif'];
 
+// Discord's CDN (and some other hosts) sit behind Cloudflare bot protection
+// that silently 403s server-side fetches with no User-Agent header.
+const FETCH_HEADERS = {
+  'User-Agent': 'Mozilla/5.0 (compatible; WubletsBot/1.0; +https://wublets-website.vercel.app)',
+};
+
+async function downloadBuffer(url) {
+  const res = await fetch(url, { headers: FETCH_HEADERS });
+  if (!res.ok) throw new Error(`Failed to download image: ${res.status} ${res.statusText}`);
+  return Buffer.from(await res.arrayBuffer());
+}
+
 /**
- * Download an image from a URL, optionally resize it, convert the format,
- * and save it to the website repo's public folder.
+ * Resize/convert an image buffer and save it into the website repo's public folder.
+ * Shared by the URL-based and Google Drive-based entry points below.
  *
- * @param {string} url - Image URL (Discord attachment, Google Drive export, etc.)
+ * @param {Buffer} buffer - Raw image bytes
  * @param {string} outputPath - Where to save it relative to the repo root, e.g. "public/images/blobby.webp"
  * @param {object} options
  * @param {number} [options.width] - Max width in px (preserves aspect ratio)
@@ -18,7 +30,7 @@ const SUPPORTED_FORMATS = ['webp', 'png', 'jpg', 'jpeg', 'avif'];
  * @param {string} [options.format] - Output format: webp, png, jpg, avif (default: webp)
  * @param {number} [options.quality] - Quality 1-100 (default: 85)
  */
-export async function processImage(url, outputPath, options = {}) {
+export async function saveImageBuffer(buffer, outputPath, options = {}) {
   const {
     width,
     height,
@@ -28,16 +40,6 @@ export async function processImage(url, outputPath, options = {}) {
 
   if (!SUPPORTED_FORMATS.includes(format)) {
     return `Unsupported format "${format}". Use one of: ${SUPPORTED_FORMATS.join(', ')}`;
-  }
-
-  // Download the image
-  let buffer;
-  try {
-    const res = await fetch(url);
-    if (!res.ok) return `Failed to download image: ${res.status} ${res.statusText}`;
-    buffer = Buffer.from(await res.arrayBuffer());
-  } catch (err) {
-    return `Error downloading image: ${err.message}`;
   }
 
   // Get original metadata
@@ -74,14 +76,31 @@ export async function processImage(url, outputPath, options = {}) {
 }
 
 /**
+ * Download an image from a URL, optionally resize it, convert the format,
+ * and save it to the website repo's public folder.
+ *
+ * @param {string} url - Image URL (Discord attachment, etc.)
+ * @param {string} outputPath - Where to save it relative to the repo root, e.g. "public/images/blobby.webp"
+ * @param {object} options - See saveImageBuffer.
+ */
+export async function processImage(url, outputPath, options = {}) {
+  let buffer;
+  try {
+    buffer = await downloadBuffer(url);
+  } catch (err) {
+    return `Error downloading image: ${err.message}`;
+  }
+
+  return saveImageBuffer(buffer, outputPath, options);
+}
+
+/**
  * Get basic info about an image URL without saving it — useful for
  * inspecting a Procreate export before deciding how to process it.
  */
 export async function inspectImage(url) {
   try {
-    const res = await fetch(url);
-    if (!res.ok) return `Failed to download image: ${res.status} ${res.statusText}`;
-    const buffer = Buffer.from(await res.arrayBuffer());
+    const buffer = await downloadBuffer(url);
     const meta = await sharp(buffer).metadata();
 
     const sizeMB = (buffer.length / 1024 / 1024).toFixed(2);

@@ -1,5 +1,6 @@
 import { google } from 'googleapis';
 import fs from 'fs/promises';
+import { saveImageBuffer } from './image.js';
 
 const FOLDER_ID = process.env.GOOGLE_DRIVE_FOLDER_ID;
 const CREDENTIALS_PATH = process.env.GOOGLE_CREDENTIALS_PATH || './google-credentials.json';
@@ -90,6 +91,35 @@ export async function gdriveRead(fileId) {
     return `Contents of "${name}":\n\n${truncated}`;
   } catch (err) {
     return `Error reading Drive file: ${err.message}`;
+  }
+}
+
+/**
+ * Download an image file from the Wublets Drive folder, resize/convert it,
+ * and save it into the website repo's public folder. Mirrors process_image
+ * but pulls the source bytes straight from Drive via the authenticated
+ * service account instead of an unauthenticated URL fetch.
+ */
+export async function gdriveProcessImage(fileId, outputPath, options = {}) {
+  try {
+    const { drive } = await getClients();
+
+    const meta = await drive.files.get({ fileId, fields: 'name, mimeType' });
+    const { name, mimeType } = meta.data;
+
+    if (!mimeType.startsWith('image/')) {
+      return `"${name}" is a ${mimeType} file, not an image.`;
+    }
+
+    const res = await drive.files.get(
+      { fileId, alt: 'media' },
+      { responseType: 'arraybuffer' }
+    );
+    const buffer = Buffer.from(res.data);
+
+    return saveImageBuffer(buffer, outputPath, options);
+  } catch (err) {
+    return `Error downloading Drive image: ${err.message}`;
   }
 }
 
