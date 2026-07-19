@@ -1,7 +1,7 @@
 import * as messagesApi from '../claude.js';
 import * as agentSdk from '../agent.js';
 import { setVoiceChannel } from '../tools/index.js';
-import { getProjectForGuild, isMultiProject } from '../config.js';
+import { getProjectForChannel, isMultiProject } from '../config.js';
 
 /**
  * Which Claude backend runs the conversation.
