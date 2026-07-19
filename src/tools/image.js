@@ -11,7 +11,14 @@ const FETCH_HEADERS = {
   'User-Agent': 'Mozilla/5.0 (compatible; DiscordClaudeBot/1.0)',
 };
 
-async function downloadBuffer(url) {
+/**
+ * Exported because the Agent SDK path needs it too: unlike the Messages API,
+ * `query()` won't accept an image by URL, so Discord attachments have to be
+ * fetched and base64-encoded before they can be sent. That fetch needs the same
+ * User-Agent workaround above, which is exactly why this is shared rather than
+ * reimplemented in ../agent.js.
+ */
+export async function downloadBuffer(url) {
   const res = await fetch(url, { headers: FETCH_HEADERS });
   if (!res.ok) throw new Error(`Failed to download image: ${res.status} ${res.statusText}`);
   return Buffer.from(await res.arrayBuffer());

@@ -1,6 +1,26 @@
-import { chat, clearHistory, getHistoryLength } from '../claude.js';
+import * as messagesApi from '../claude.js';
+import * as agentSdk from '../agent.js';
 import { setVoiceChannel } from '../tools/index.js';
 import { getProjectForGuild, isMultiProject } from '../config.js';
+
+/**
+ * Which Claude backend runs the conversation.
+ *
+ * Both modules export the same chat/clearHistory/getHistoryLength surface, so
+ * everything below is unchanged either way:
+ *
+ *   ../claude.js  — Messages API with a hand-rolled agentic loop (default)
+ *   ../agent.js   — Claude Agent SDK (set USE_AGENT_SDK=1)
+ *
+ * The Messages API path stays the default deliberately. It is what is deployed
+ * and known to work; the SDK path is opt-in until it has been exercised against
+ * a real server, and flipping the variable back is the entire rollback.
+ */
+const USE_AGENT_SDK = /^(1|true|yes)$/i.test(process.env.USE_AGENT_SDK || '');
+const backend = USE_AGENT_SDK ? agentSdk : messagesApi;
+const { chat, clearHistory, getHistoryLength } = backend;
+
+console.log(`[msg] Claude backend: ${USE_AGENT_SDK ? 'Agent SDK' : 'Messages API'}`);
 
 
 const ALLOWED_CHANNEL_IDS = process.env.ALLOWED_CHANNEL_IDS

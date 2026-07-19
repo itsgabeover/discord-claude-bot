@@ -1,0 +1,286 @@
+import { query, InMemorySessionStore } from '@anthropic-ai/claude-agent-sdk';
+import { getMcpServer, SERVER_NAME } from './tools/mcp.js';
+import { getSystemPrompt } from './prompts/system.js';
+import { downloadBuffer } from './tools/image.js';
+
+/**
+ * The Agent SDK implementation of chat(), an alternative to ./claude.js.
+ *
+ * Exposes exactly the same signature so ../handlers/message.js can pick one at
+ * runtime without knowing which it got. Set USE_AGENT_SDK=1 to route here; the
+ * Messages API path stays the default, and stays the rollback.
+ *
+ * What the SDK takes over: the agentic loop, prompt caching (automatic — the
+ * hand-placed cache_control breakpoints in ./claude.js have no equivalent and
+ * aren't needed), turn limits, and cost accounting.
+ *
+ * What it does NOT take over: the tools. Those are still the bot's own
+ * functions, handed to the SDK as an in-process MCP server (see ./tools/mcp.js).
+ */
+
+const MODEL = process.env.CLAUDE_MODEL || 'claude-sonnet-4-6';
+
+// The SDK has no per-turn tool-call cap — only maxTurns (assistant round trips)
+// and maxBudgetUsd. MAX_TOOL_CALLS is reused as maxTurns because it is the
+// closest available knob, but they are NOT the same unit: one turn can contain
+// several parallel tool calls, so this is a looser bound than the Messages API
+// path enforces. MAX_BUDGET_USD is the tighter, more meaningful cap here.
+const MAX_TURNS = parseInt(process.env.MAX_TOOL_CALLS || '30', 10);
+const MAX_BUDGET_USD = process.env.MAX_BUDGET_USD
+  ? parseFloat(process.env.MAX_BUDGET_USD)
+  : undefined;
+
+// Per-channel session IDs, so a channel's conversation continues across
+// messages: Map<channelId, sessionId>
+const sessions = new Map();
+
+// Sessions are kept in memory rather than on disk. The SDK's default is to
+// write transcripts to ~/.claude/projects/*.jsonl, which on Render's ephemeral
+// disk both survives nothing across a redeploy and writes for no reason. In
+// memory matches what ./claude.js already does — history is lost on restart —
+// so this is not a behaviour regression. Swap in a Redis/S3 SessionStore here
+// if conversations should ever outlive the process.
+const sessionStore = new InMemorySessionStore();
+
+function usageFooter(totalTokens, costUsd) {
+  const cost = typeof costUsd === 'number' ? ` · $${costUsd.toFixed(4)}` : '';
+  return `\n\n-# ~${totalTokens.toLocaleString()} tokens this turn${cost}`;
+}
+
+/**
+ * Total tokens for a turn, counting cached input.
+ *
+ * Same reasoning as ./claude.js: input_tokens counts only the uncached
+ * remainder, so summing input + output alone would make the number shrink as
+ * the cache hit rate rises rather than reflecting the work actually done.
+ */
+function totalTokensFrom(usage = {}) {
+  const {
+    input_tokens = 0,
+    output_tokens = 0,
+    cache_creation_input_tokens: cacheWrite = 0,
+    cache_read_input_tokens: cacheRead = 0,
+  } = usage;
+  return input_tokens + output_tokens + cacheWrite + cacheRead;
+}
+
+export function clearHistory(channelId) {
+  sessions.delete(channelId);
+  return 'Conversation history cleared for this channel.';
+}
+
+/**
+ * Session-based history has no message count to report — the transcript lives
+ * inside the SDK session rather than in an array here. Reported as 0 or 1 so
+ * the !history command keeps working rather than crashing.
+ */
+export function getHistoryLength(channelId) {
+  return sessions.has(channelId) ? 1 : 0;
+}
+
+/**
+ * Build the one user message this turn sends.
+ *
+ * Images have to be downloaded and base64-encoded first: unlike the Messages
+ * API, the SDK will not accept an image by URL, so passing the Discord CDN link
+ * through — which is what ./claude.js does — silently gets no image at all.
+ */
+async function buildUserContent(text, images, username) {
+  const content = [];
+
+  for (const img of images) {
+    try {
+      const buffer = await downloadBuffer(img.url);
+      content.push({
+        type: 'image',
+        source: {
+          type: 'base64',
+          media_type: img.contentType || 'image/png',
+          data: buffer.toString('base64'),
+        },
+      });
+    } catch (err) {
+      // One unreadable attachment shouldn't sink the whole message — tell
+      // Claude what happened and let it respond to the text.
+      console.error('[agent] Could not attach image:', err.message);
+      content.push({
+        type: 'text',
+        text: `[An image was attached but could not be downloaded: ${err.message}]`,
+      });
+    }
+  }
+
+  content.push({ type: 'text', text: `**${username}:** ${text}` });
+  return content;
+}
+
+/**
+ * Ask Claude to summarize an unfinished turn, with no tools available.
+ *
+ * Ported from ./claude.js: when a cap is hit, a canned "try again" is much less
+ * useful than having Claude describe what it got done and hand the user
+ * ready-to-send follow-ups. The SDK's own cap handling just ends the run with
+ * an error subtype and no text, so this has to be re-issued explicitly.
+ */
+async function summarizeIncompleteTask(project, sessionId, reason) {
+  try {
+    let summary = '';
+    for await (const message of query({
+      prompt:
+        `[SYSTEM NOTE: You've hit this turn's ${reason} and cannot call any more ` +
+        `tools right now. Do not attempt to call any tools. Briefly summarize what ` +
+        `you completed, what's left, and give the user 2-3 short, ready-to-send ` +
+        `follow-up messages that would let you finish the rest across separate turns.]`,
+      options: {
+        model: MODEL,
+        resume: sessionId,
+        sessionStore,
+        tools: [], // no built-ins, and no MCP servers — it can only answer in text
+        systemPrompt: await getSystemPrompt(project),
+        maxTurns: 1,
+      },
+    })) {
+      if (message.type === 'result' && message.subtype === 'success') {
+        summary = message.result;
+      }
+    }
+    return summary || `I hit this turn's ${reason} — try breaking your request into smaller steps.`;
+  } catch (err) {
+    console.error('[agent] Failed to summarize incomplete task:', err.message);
+    return `I hit this turn's ${reason} — the task might be too complex for a single message. Try breaking it into smaller steps.`;
+  }
+}
+
+/**
+ * Send a message to Claude via the Agent SDK and get a response.
+ *
+ * Signature-compatible with ./claude.js chat().
+ *
+ * @param {object} project - Resolved project config
+ * @param {string} channelId - Discord channel or thread ID (session key)
+ * @param {string} text - The user's message text
+ * @param {Array<{url: string, contentType: string}>} images - Image attachments
+ * @param {string} username - Discord username for context
+ * @param {(name: string, input: object) => void} [onToolCall] - Fired before
+ *   each tool runs, to drive the live progress message
+ * @returns {Promise<string>} Claude's final text response
+ */
+export async function chat(project, channelId, text, images = [], username = 'User', onToolCall) {
+  const { server, toolNames } = getMcpServer(project);
+  const content = await buildUserContent(text, images, username);
+  const resumeId = sessions.get(channelId);
+
+  // Streaming input mode. Required rather than optional: the plain-string form
+  // of `prompt` cannot carry image blocks at all.
+  async function* promptStream() {
+    yield {
+      type: 'user',
+      message: { role: 'user', content },
+      parent_tool_use_id: null,
+    };
+  }
+
+  let totalTokens = 0;
+  let costUsd;
+  let finalText = '';
+  let capReason = null;
+  let sessionId = resumeId;
+
+  console.log(
+    `[agent:${project.id}] channel=${channelId} ${resumeId ? 'resuming' : 'starting'} session`,
+  );
+
+  for await (const message of query({
+    prompt: promptStream(),
+    options: {
+      model: MODEL,
+      // A plain string fully REPLACES Claude Code's default system prompt. That
+      // is the point: the preset would drop a coding-agent persona on top of
+      // the bot's own, and there is no way to subtract parts of it afterwards.
+      systemPrompt: await getSystemPrompt(project),
+      mcpServers: { [SERVER_NAME]: server },
+      // No built-in tools. The bot's filesystem and git tools pin every path
+      // inside the project repo via safeResolve(); the SDK's built-in Read /
+      // Write / Bash do not, and Bash in particular would hand anyone who can
+      // @mention the bot arbitrary shell access on the host.
+      tools: [],
+      // Auto-approve exactly the bot's own tools. Anything else falls through
+      // to canUseTool below, which denies — so a tool arriving from somewhere
+      // unexpected fails closed instead of running.
+      allowedTools: toolNames,
+      canUseTool: async (toolName, input) => {
+        // updatedInput must echo the original input — it REPLACES what the tool
+        // receives, so returning {} here would strip every argument.
+        if (toolNames.includes(toolName)) return { behavior: 'allow', updatedInput: input };
+        console.warn(`[agent:${project.id}] denied unexpected tool: ${toolName}`);
+        return { behavior: 'deny', message: `${toolName} is not available to this bot.` };
+      },
+      hooks: {
+        // PreToolUse rather than canUseTool for progress reporting: canUseTool
+        // never fires for tools that are already auto-approved via allowedTools,
+        // so every one of the bot's own tools would be invisible to it.
+        PreToolUse: [
+          {
+            hooks: [
+              async (input) => {
+                if (onToolCall) {
+                  // MCP-qualified name back to the bare tool name the progress
+                  // labels in ../handlers/message.js are keyed on.
+                  const bare = String(input.tool_name || '').replace(
+                    `mcp__${SERVER_NAME}__`,
+                    '',
+                  );
+                  try {
+                    onToolCall(bare, input.tool_input);
+                  } catch {
+                    /* progress display is best-effort */
+                  }
+                }
+                return {};
+              },
+            ],
+          },
+        ],
+      },
+      maxTurns: MAX_TURNS,
+      ...(MAX_BUDGET_USD ? { maxBudgetUsd: MAX_BUDGET_USD } : {}),
+      resume: resumeId,
+      sessionStore,
+    },
+  })) {
+    if (message.type === 'system' && message.subtype === 'init') {
+      sessionId = message.session_id;
+    }
+
+    if (message.type === 'result') {
+      sessionId = message.session_id || sessionId;
+      totalTokens = totalTokensFrom(message.usage);
+      costUsd = message.total_cost_usd;
+
+      if (message.subtype === 'success') {
+        finalText = message.result;
+      } else if (message.subtype === 'error_max_turns') {
+        capReason = 'turn limit';
+      } else if (message.subtype === 'error_max_budget_usd') {
+        capReason = 'cost budget for this turn';
+      } else {
+        capReason = `run error (${message.subtype})`;
+      }
+    }
+  }
+
+  if (sessionId) sessions.set(channelId, sessionId);
+
+  console.log(
+    `[agent:${project.id}] channel=${channelId} done: ${totalTokens} tokens` +
+      (typeof costUsd === 'number' ? `, $${costUsd.toFixed(4)}` : '') +
+      (capReason ? ` (stopped: ${capReason})` : ''),
+  );
+
+  if (capReason) {
+    const summary = await summarizeIncompleteTask(project, sessionId, capReason);
+    return summary + usageFooter(totalTokens, costUsd);
+  }
+
+  return (finalText.trim() || '*(no text response)*') + usageFooter(totalTokens, costUsd);
+}
