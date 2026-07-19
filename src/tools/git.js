@@ -11,10 +11,16 @@ function getGit() {
  * REPO_PATH on Render is an ephemeral temp directory that's wiped on every
  * redeploy, so git identity can never be set once and persist — it has to
  * be (re)configured locally in the repo on every fresh clone.
+ *
+ * The email must match a verified email on the GitHub account that owns the
+ * Vercel Hobby team — Vercel blocks deployments whose commit author email
+ * doesn't resolve to a real, verified GitHub account (see the "bot@wublets.com
+ * could not be matched to a GitHub account" incident). The display name can
+ * still read as the bot; only the email needs to be real.
  */
 async function ensureGitIdentity(git) {
   const name = process.env.GIT_AUTHOR_NAME || 'Wublets Bot';
-  const email = process.env.GIT_AUTHOR_EMAIL || 'bot@wublets.com';
+  const email = process.env.GIT_AUTHOR_EMAIL || 'gabe.enrique.miranda@gmail.com';
   await git.addConfig('user.name', name, false, 'local');
   await git.addConfig('user.email', email, false, 'local');
 }
