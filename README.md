@@ -153,6 +153,9 @@ Skip this if you don't need Drive access — the bot works without it.
    - `BRAVE_SEARCH_API_KEY` (if using web search)
    - `NOTIFICATIONS_CHANNEL_ID` (if using webhooks — see below)
    - `GITHUB_WEBHOOK_SECRET` (if using GitHub webhooks)
+   - `USE_AGENT_SDK` — leave unset for the default engine; `1` opts into the
+     Claude Agent SDK (see [Claude backend](#claude-backend) below)
+   - `MAX_BUDGET_USD` — optional; defaults to `1.00` per reply on the Agent SDK path
 
 6. If using Google Drive, go to **Secret Files** and upload your `google-credentials.json` as `./google-credentials.json`
 
@@ -161,6 +164,44 @@ Skip this if you don't need Drive access — the bot works without it.
 8. Click **Create Web Service** — Render will deploy the bot. On first startup it will clone your project repo automatically.
 
 > **Note on Render's free tier:** Free services spin down after 15 minutes of inactivity. The bot will restart on the next Discord message, but there may be a ~30 second delay. Upgrade to the Starter plan ($7/mo) for always-on.
+
+---
+
+## Claude backend
+
+The bot can run its conversation loop on either of two engines. Both use the
+same tools and the same system prompt — only the loop around them differs.
+
+| `USE_AGENT_SDK` | Engine | |
+|---|---|---|
+| unset / `0` | Messages API with the bot's own agentic loop | The default. What has been running in production. |
+| `1` | Claude Agent SDK | Opt-in. The SDK owns the loop, prompt caching, turn limits, and cost accounting. |
+
+Switching is entirely an environment change — set the variable, restart, done.
+Unsetting it is the rollback; no code change or redeploy of a different commit
+is needed either way.
+
+**Try it locally before deploying it.** The SDK path has not been exercised
+against a live server:
+
+```bash
+USE_AGENT_SDK=1 npm run dev
+```
+
+Then in Discord, check the things that differ most from the default path —
+share an image (attachments are downloaded and base64-encoded rather than
+passed by URL), send two messages in a row (conversation continues via an SDK
+session rather than a message array), and ask it to read `../.env` to confirm
+the built-in file tools stay inside the project repo.
+
+**On Render**, adding or changing `USE_AGENT_SDK` restarts the service, which
+clears conversation history for every channel — the same thing a redeploy does
+today. Worth watching memory on the first few turns: the Agent SDK spawns a
+bundled `claude` CLI subprocess per turn, which is real extra memory on a free
+instance.
+
+See `AGENT-SDK-MIGRATION.md` for the architecture, the behavioural differences,
+and what is and isn't verified.
 
 ---
 
