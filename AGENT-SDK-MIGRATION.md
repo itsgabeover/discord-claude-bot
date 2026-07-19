@@ -130,6 +130,46 @@ Deliberate choices worth not undoing:
 - `safeResolve()` was verified to still block `../../../etc/passwd` through the
   MCP wrapper.
 
+## Multiple repos, and how the SDK path handles them
+
+`projects.json` routes by channel as well as by guild, so one server can work on
+several repos — `#app-dev` on the phone app, the rest of the server on the web
+app. See `projects.example.json` for the config; what matters here is that the
+SDK path needed **no changes at all** to support it.
+
+Routing resolves *before* a backend is chosen. A message picks exactly one
+project, and `chat(project, ...)` receives it the way it always did:
+
+```
+message → getProjectForChannel(guildId, channelId) → one project
+                                                      ├─ claude.js  (Messages API)
+                                                      └─ agent.js   (Agent SDK)
+```
+
+So everything the SDK path already builds per project is per repo for free, and
+stays separated:
+
+| Per-project thing | Effect with several repos |
+|---|---|
+| `getMcpServer(project)`, cached by `project.id` | Each repo gets its own MCP server and tool set |
+| `cwd: project.repoPath` | `Read`/`Grep`/`Glob` bounded to *that* repo's checkout |
+| `getSystemPrompt(project)` | Each repo can have its own persona |
+| `toolPacks` | The phone app can drop `gdrive`/`todo`/`discord` |
+
+The `cwd` line is worth being explicit about: each project has its own checkout
+under `REPO_ROOT`, so the built-in file tools in an `#app-dev` conversation are
+bounded to the phone app's tree and **cannot read the web app's** — the same
+boundary `safeResolve()` gives the bot's own tools, applied per conversation
+rather than globally.
+
+Sessions are keyed by Discord channel and channel routing is what selects the
+project, so a channel's session and its repo cannot drift apart.
+
+**What this does not do** is let one conversation touch two repos. That would
+need a `repo` parameter on every filesystem and git tool, `safeResolve()` called
+against a set of roots, and the SDK's `additionalDirectories` option so the
+built-ins could span checkouts. Not built, and not needed for split-by-channel.
+
 ## What the SDK path unlocks that the Messages API path can't do
 
 None of this is wired up — the migration deliberately kept behaviour identical.

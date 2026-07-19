@@ -1,9 +1,9 @@
 {
   "_comment": [
     "Copy to projects.json to run several projects from one bot process.",
-    "Each entry binds a Discord guild (server) ID to its own prompt, repo, Drive",
-    "folder, and tool packs. Guilds not listed here get NO response — the bot never",
-    "falls back to another project's configuration.",
+    "Each entry claims a Discord guild (server), and optionally specific channels",
+    "within it. Anything unclaimed gets NO response — the bot never falls back to",
+    "another project's configuration.",
     "",
     "Delete this file (or don't create projects.json) to stay in single-project",
     "mode, where everything comes from environment variables.",
@@ -11,26 +11,58 @@
     "Anything you omit falls back to the matching environment variable, so shared",
     "settings like githubToken and gitAuthorEmail can stay in .env.",
     "",
-    "To get a guild ID: enable Developer Mode in Discord, right-click the server",
-    "name, then 'Copy Server ID'."
+    "ROUTING — how a message finds its repo:",
+    "  1. A project whose channelIds include the message's channel wins.",
+    "  2. Otherwise the guild's default project — the entry with no channelIds.",
+    "  3. Otherwise no response.",
+    "",
+    "That is how one server works on several repos: give each extra repo its own",
+    "channels and leave the main one as the default. A message always resolves to",
+    "exactly one project, so no conversation ever spans two checkouts.",
+    "",
+    "A guild may have at most one default, and no two projects may claim the same",
+    "channel. Either mistake stops the bot at startup rather than guessing.",
+    "",
+    "channelIds doubles as that project's allowlist, so there's no need to repeat",
+    "them in allowedChannelIds.",
+    "",
+    "Each project gets its own checkout under REPO_ROOT (default ./repos) named",
+    "after its key, so two projects can never commit into each other's tree.",
+    "",
+    "IDs: enable Developer Mode in Discord, then right-click a server for 'Copy",
+    "Server ID' or a channel for 'Copy Channel ID'. Keep them quoted — unquoted",
+    "they parse as numbers and lose precision.",
+    "",
+    "TOKENS: a fine-grained GitHub PAT is scoped to specific repositories. One",
+    "scoped to a single repo cannot clone the others, and the bot will fail to",
+    "prepare them at startup. Either widen the token to cover every repo below,",
+    "or give each project its own githubToken."
   ],
 
   "projects": {
-    "website": {
+    "web": {
       "guildId": "111111111111111111",
-      "name": "Marketing Site",
-      "systemPromptPath": "./prompts/website.md",
-      "repoUrl": "https://github.com/yourname/website",
+      "name": "Wublets Web App",
+      "systemPromptPath": "./prompts/web.md",
+      "repoUrl": "https://github.com/yourname/wublets-website",
       "driveFolderId": "your_drive_folder_id",
-      "toolPacks": ["files", "git", "npm", "web", "media", "gdrive", "todo"],
+      "toolPacks": ["files", "git", "npm", "web", "media", "gdrive", "todo", "discord"],
       "todoDocName": "todo"
     },
 
-    "game": {
-      "guildId": "222222222222222222",
-      "name": "Game Project",
-      "systemPromptPath": "./prompts/game.md",
-      "repoUrl": "https://github.com/yourname/game",
+    "app": {
+      "guildId": "111111111111111111",
+      "channelIds": ["222222222222222222", "333333333333333333"],
+      "name": "Wublets Phone App",
+      "systemPromptPath": "./prompts/app.md",
+      "repoUrl": "https://github.com/yourname/wublets-app",
+      "toolPacks": ["files", "git", "npm", "web", "media"]
+    },
+
+    "other-server": {
+      "guildId": "444444444444444444",
+      "name": "Some Other Project",
+      "repoUrl": "https://github.com/yourname/other",
       "toolPacks": ["files", "git", "web"]
     }
   }
