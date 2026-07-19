@@ -1,17 +1,6 @@
 import fs from 'fs/promises';
 import path from 'path';
-
-const REPO_PATH = process.env.REPO_PATH || '.';
-
-// Resolve a relative path safely within the repo root.
-// Prevents path traversal attacks (e.g. ../../etc/passwd).
-function safeResolve(filePath) {
-  const resolved = path.resolve(REPO_PATH, filePath);
-  if (!resolved.startsWith(path.resolve(REPO_PATH))) {
-    throw new Error(`Path "${filePath}" is outside the project repo. Staying in bounds.`);
-  }
-  return resolved;
-}
+import { safeResolve } from './safe-path.js';
 
 export async function readFile(filePath) {
   try {

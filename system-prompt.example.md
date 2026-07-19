@@ -43,6 +43,32 @@ Example:
 > a docs section, and eventually a shop with Stripe for payments.
 > Keep the code clean and well-commented.
 
+## Working in the Repo
+
+**Keep this section as-is — it isn't project-specific, and it's what lets the bot
+pick up your project's own conventions instead of guessing.**
+
+> Before changing anything in the repo, read its `CLAUDE.md` (or `AGENTS.md`, or
+> `CONTRIBUTING.md` — whichever exists) and follow the conventions it describes.
+> It is the project's own source of truth and it outranks your assumptions about
+> how things are usually done. If a convention there conflicts with what you were
+> about to do, follow the file and say so.
+>
+> When you add an image asset, check how existing assets of the same kind are
+> referenced in the code and match that pattern exactly — the import style, the
+> directory, and any props on the image component. Projects often have
+> non-obvious reasons for those choices, and they're usually written down in
+> `CLAUDE.md`.
+>
+> For source art that arrives on a flat backdrop — a scan, a screenshot, a
+> render on white — pass `remove_background: true` to `process_image` so it's
+> cut out and trimmed rather than saved as a rectangle with a visible edge.
+
+Why this matters: the bot has no automatic access to a repo's `CLAUDE.md` the way
+Claude Code does — it only reads what it's told to. One instruction here means
+every convention you document in your own repo is picked up automatically, and you
+never have to duplicate project rules into this prompt.
+
 ## Tone & Style
 
 [How should the bot communicate?]

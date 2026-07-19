@@ -91,12 +91,12 @@ export const toolDefinitions = [
   // ── Google Drive ─────────────────────────────────────────────────────────
   {
     name: 'gdrive_list',
-    description: 'List files in the Wublets Google Drive folder — brand docs, character sheets, notes, etc.',
+    description: 'List files in the configured Google Drive folder — docs, reference material, assets, etc.',
     input_schema: { type: 'object', properties: {}, required: [] },
   },
   {
     name: 'gdrive_read',
-    description: 'Read a Google Doc, Sheet, or text file from the Wublets Drive folder.',
+    description: 'Read a Google Doc, Sheet, or text file from the configured Drive folder.',
     input_schema: {
       type: 'object',
       properties: {
@@ -107,11 +107,11 @@ export const toolDefinitions = [
   },
   {
     name: 'gdrive_create_doc',
-    description: 'Create a new Google Doc in the Wublets Drive folder. Good for character sheets, brand docs, meeting notes, marketing copy.',
+    description: 'Create a new Google Doc in the configured Drive folder. Good for specs, notes, meeting minutes, copy drafts.',
     input_schema: {
       type: 'object',
       properties: {
-        name: { type: 'string', description: 'Document name, e.g. "Wublets Brand Guide"' },
+        name: { type: 'string', description: 'Document name, e.g. "Project Brand Guide"' },
         content: { type: 'string', description: 'Text content to put in the document.' },
       },
       required: ['name', 'content'],
@@ -131,17 +131,19 @@ export const toolDefinitions = [
   },
   {
     name: 'gdrive_process_image',
-    description: "Download an image file from the Wublets Drive folder, resize it, convert its format, and save it into the website repo's public folder. Use gdrive_list first to find the file's ID. Recommended format: webp.",
+    description: "Download an image file from the configured Drive folder, resize it, convert its format, and save it into the repo. Use gdrive_list first to find the file's ID. Recommended format: webp.",
     input_schema: {
       type: 'object',
       properties: {
         file_id: { type: 'string', description: 'File ID from gdrive_list results.' },
-        output_path: { type: 'string', description: 'Where to save it in the repo, e.g. "public/images/patch.webp"' },
+        output_path: { type: 'string', description: 'Where to save it in the repo, e.g. "public/images/logo.webp"' },
         width: { type: 'number', description: 'Max width in pixels (optional, preserves aspect ratio).' },
         height: { type: 'number', description: 'Max height in pixels (optional, preserves aspect ratio).' },
         format: { type: 'string', description: 'Output format: webp (default), png, jpg, avif.' },
         quality: { type: 'number', description: 'Quality 1–100 (default 85).' },
         tint: { type: 'string', description: 'Apply a color tint, as a hex color like "#4A90D9" (optional).' },
+        remove_background: { type: 'boolean', description: 'Knock a flat background out to transparent and trim to the subject. Use for logos, product shots, and character art that arrives on white or paper. Requires webp or png.' },
+        background_tolerance: { type: 'number', description: 'How far a pixel may drift from the sampled backdrop and still count as background (default 22). Raise if texture survives, lower if the subject gets eaten.' },
       },
       required: ['file_id', 'output_path'],
     },
@@ -155,7 +157,7 @@ export const toolDefinitions = [
   },
   {
     name: 'send_to_channel',
-    description: 'Send a message to a specific Discord channel. Use list_channels first to get the channel ID. Good for announcements like "the site just deployed" or pinging Hannah about something.',
+    description: 'Send a message to a specific Discord channel. Use list_channels first to get the channel ID. Good for announcements like "the site just deployed" or notifying a teammate about something.',
     input_schema: {
       type: 'object',
       properties: {
@@ -169,7 +171,7 @@ export const toolDefinitions = [
   // ── Images ────────────────────────────────────────────────────────────────
   {
     name: 'inspect_image',
-    description: "Get the dimensions, format, and file size of an image URL — useful for checking a Procreate export before deciding how to process it.",
+    description: "Get the dimensions, format, and file size of an image URL — useful for checking a source file before deciding how to process it.",
     input_schema: {
       type: 'object',
       properties: {
@@ -180,17 +182,19 @@ export const toolDefinitions = [
   },
   {
     name: 'process_image',
-    description: "Download an image from a URL, resize it, convert its format, and save it into the website repo's public folder. Great for turning Procreate exports into web-optimised assets. Recommended format: webp.",
+    description: "Download an image from a URL, resize it, convert its format, and save it into the repo. Great for turning design-tool exports into web-optimised assets. Recommended format: webp.",
     input_schema: {
       type: 'object',
       properties: {
         url: { type: 'string', description: 'URL of the source image.' },
-        output_path: { type: 'string', description: 'Where to save it in the repo, e.g. "public/images/blobby.webp"' },
+        output_path: { type: 'string', description: 'Where to save it in the repo, e.g. "public/images/logo.webp"' },
         width: { type: 'number', description: 'Max width in pixels (optional, preserves aspect ratio).' },
         height: { type: 'number', description: 'Max height in pixels (optional, preserves aspect ratio).' },
         format: { type: 'string', description: 'Output format: webp (default), png, jpg, avif.' },
         quality: { type: 'number', description: 'Quality 1–100 (default 85).' },
         tint: { type: 'string', description: 'Apply a color tint, as a hex color like "#4A90D9" (optional).' },
+        remove_background: { type: 'boolean', description: 'Knock a flat background out to transparent and trim to the subject. Use for logos, product shots, and character art that arrives on white or paper. Requires webp or png.' },
+        background_tolerance: { type: 'number', description: 'How far a pixel may drift from the sampled backdrop and still count as background (default 22). Raise if texture survives, lower if the subject gets eaten.' },
       },
       required: ['url', 'output_path'],
     },

@@ -12,15 +12,24 @@ function getGit() {
  * redeploy, so git identity can never be set once and persist — it has to
  * be (re)configured locally in the repo on every fresh clone.
  *
- * The email must match a verified email on the GitHub account that owns the
- * Vercel Hobby team — Vercel blocks deployments whose commit author email
- * doesn't resolve to a real, verified GitHub account (see the "bot@wublets.com
- * could not be matched to a GitHub account" incident). The display name can
- * still read as the bot; only the email needs to be real.
+ * GIT_AUTHOR_EMAIL must be a verified email on a real GitHub account. Some
+ * hosts reject deployments whose commit author doesn't resolve to one — Vercel
+ * blocks them outright, which surfaces as "<address> could not be matched to a
+ * GitHub account". A made-up address like bot@example.com will fail there. The
+ * display name is free-form; only the email needs to be real.
+ *
+ * There is deliberately no default: committing as whoever the author happened
+ * to hardcode is worse than a clear error at startup.
  */
 async function ensureGitIdentity(git) {
-  const name = process.env.GIT_AUTHOR_NAME || 'Wublets Bot';
-  const email = process.env.GIT_AUTHOR_EMAIL || 'gabe.enrique.miranda@gmail.com';
+  const name = process.env.GIT_AUTHOR_NAME || 'Claude Bot';
+  const email = process.env.GIT_AUTHOR_EMAIL;
+  if (!email) {
+    throw new Error(
+      'GIT_AUTHOR_EMAIL is not set. Set it to a verified email on the GitHub ' +
+        'account the bot should commit as — see .env.example.',
+    );
+  }
   await git.addConfig('user.name', name, false, 'local');
   await git.addConfig('user.email', email, false, 'local');
 }

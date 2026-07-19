@@ -44,7 +44,7 @@ export async function gdriveList() {
     });
 
     const files = res.data.files || [];
-    if (files.length === 0) return 'No files found in the Wublets Drive folder.';
+    if (files.length === 0) return 'No files found in the configured Drive folder.';
 
     const lines = files.map(f => {
       const type = f.mimeType.includes('folder') ? '📁' :
@@ -55,7 +55,7 @@ export async function gdriveList() {
       return `${type} ${f.name}  (id: ${f.id}, modified: ${date})`;
     });
 
-    return `Wublets Drive folder contents:\n\n${lines.join('\n')}`;
+    return `Drive folder contents:\n\n${lines.join('\n')}`;
   } catch (err) {
     return `Error listing Drive: ${err.message}`;
   }
@@ -95,7 +95,7 @@ export async function gdriveRead(fileId) {
 }
 
 /**
- * Download an image file from the Wublets Drive folder, resize/convert it,
+ * Download an image file from the configured Drive folder, resize/convert it,
  * and save it into the website repo's public folder. Mirrors process_image
  * but pulls the source bytes straight from Drive via the authenticated
  * service account instead of an unauthenticated URL fetch.
@@ -124,7 +124,7 @@ export async function gdriveProcessImage(fileId, outputPath, options = {}) {
 }
 
 /**
- * Create a new Google Doc in the Wublets Drive folder with the given content.
+ * Create a new Google Doc in the configured Drive folder with the given content.
  */
 export async function gdriveCreateDoc(name, content) {
   try {
