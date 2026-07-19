@@ -1,4 +1,10 @@
-import { google } from 'googleapis';
+// Scoped packages rather than the `googleapis` barrel. That barrel eagerly
+// loads the client surface for every Google API — measured at 98MB RSS — to
+// reach two of them. Drive + Docs alone cost 26MB. On Render's 512MB instance
+// that difference is the margin between serving a large image and an OOM kill.
+import { GoogleAuth } from 'google-auth-library';
+import { drive as driveApi } from '@googleapis/drive';
+import { docs as docsApi } from '@googleapis/docs';
 import fs from 'fs/promises';
 import { saveImageBuffer } from './image.js';
 
@@ -14,7 +20,7 @@ async function getClients() {
     const credsRaw = await fs.readFile(CREDENTIALS_PATH, 'utf-8');
     const creds = JSON.parse(credsRaw);
 
-    const auth = new google.auth.GoogleAuth({
+    const auth = new GoogleAuth({
       credentials: creds,
       scopes: [
         'https://www.googleapis.com/auth/drive',
@@ -22,8 +28,8 @@ async function getClients() {
       ],
     });
 
-    driveClient = google.drive({ version: 'v3', auth });
-    docsClient = google.docs({ version: 'v1', auth });
+    driveClient = driveApi({ version: 'v3', auth });
+    docsClient = docsApi({ version: 'v1', auth });
     return { drive: driveClient, docs: docsClient };
   } catch (err) {
     throw new Error(`Could not initialise Google APIs: ${err.message}. Make sure GOOGLE_CREDENTIALS_PATH is set and the file exists.`);

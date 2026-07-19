@@ -2,6 +2,7 @@ import * as messagesApi from '../claude.js';
 import * as agentSdk from '../agent.js';
 import { setVoiceChannel } from '../tools/index.js';
 import { getProjectForChannel, isMultiProject } from '../config.js';
+import { turnLimiter } from '../concurrency.js';
 
 /**
  * Which Claude backend runs the conversation.
@@ -214,7 +215,25 @@ export async function handleMessage(message) {
       : message.reply(body).catch(() => null);
   };
 
+  // Bound how many turns run at once — see ../concurrency.js. Acquired before
+  // chat() and released in `finally` so a thrown turn cannot strand the slot
+  // and deadlock every channel behind it.
+  let queueNotice = null;
+  const release = await turnLimiter.acquire((position) => {
+    queueNotice = message
+      .reply(`⏳ Working on something else right now — you're #${position} in line.`)
+      .catch(() => null);
+  });
+
   try {
+    // The notice has served its purpose once the turn starts; leaving it would
+    // strand "you're #1 in line" above a finished answer.
+    if (queueNotice) {
+      const notice = await queueNotice;
+      await notice?.delete().catch(() => {});
+      queueNotice = null;
+    }
+
     const response = await chat(
       project,
       message.channelId,
@@ -245,5 +264,7 @@ export async function handleMessage(message) {
     clearInterval(typingInterval);
     console.error('[error]', err);
     await message.reply(`Something went wrong: ${err.message}`);
+  } finally {
+    release();
   }
 }

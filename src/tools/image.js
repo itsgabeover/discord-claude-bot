@@ -5,6 +5,14 @@ import { safeResolve } from './safe-path.js';
 
 const SUPPORTED_FORMATS = ['webp', 'png', 'jpg', 'jpeg', 'avif'];
 
+// Peak memory for the background knockout is ~9 bytes per source pixel: 4 for
+// the raw RGBA buffer sharp hands back, 1 for `seen`, 4 for `stack` — before
+// sharp's own input and output buffers on top. A 4000px-square source is
+// therefore ~144MB inside this one function, which on a 512MB Render instance
+// is the difference between processing a hero image and being OOM-killed.
+// Capping the working resolution holds it near 36MB.
+const MAX_FILL_PIXELS = parseInt(process.env.MAX_FILL_PIXELS || '4000000', 10);
+
 // Discord's CDN (and some other hosts) sit behind Cloudflare bot protection
 // that silently 403s server-side fetches with no User-Agent header.
 const FETCH_HEADERS = {
@@ -49,34 +57,50 @@ function knockOutBackground(data, width, height, channels, tolerance) {
   const seen = new Uint8Array(width * height);
   // Pixel-index stack rather than [x,y] pairs — source art is routinely 4000px
   // a side, where per-pixel array allocation dominates the runtime.
+  //
+  // `seen` is set when a pixel is PUSHED, not when it is popped. That ordering
+  // is load-bearing twice over. Marking on pop lets a pixel be pushed once per
+  // neighbour, so `top` can reach 4×(width×height) and run off the end of a
+  // Int32Array sized width×height — and an out-of-bounds typed-array write is
+  // silently discarded in JS, so the fill would quietly stop expanding and
+  // leave background behind with no error to explain it. Marking on push makes
+  // each pixel enter the stack at most once, which bounds `top` by exactly
+  // width×height and keeps this buffer at its allocated size.
   const stack = new Int32Array(width * height);
   let top = 0;
   let cleared = 0;
 
+  const push = (p) => {
+    if (!seen[p]) {
+      seen[p] = 1;
+      stack[top++] = p;
+    }
+  };
+
   for (let x = 0; x < width; x++) {
-    stack[top++] = x;
-    stack[top++] = (height - 1) * width + x;
+    push(x);
+    push((height - 1) * width + x);
   }
   for (let y = 0; y < height; y++) {
-    stack[top++] = y * width;
-    stack[top++] = y * width + (width - 1);
+    push(y * width);
+    push(y * width + (width - 1));
   }
 
   while (top > 0) {
     const p = stack[--top];
-    if (seen[p]) continue;
     const i = p * channels;
+    // Seen-but-not-background: visited so it is never re-queued, but it is the
+    // subject rather than the backdrop, so the fill stops rather than crossing.
     if (!isBackground(i)) continue;
-    seen[p] = 1;
     data[i + 3] = 0;
     cleared++;
 
     const x = p % width;
     const y = (p / width) | 0;
-    if (x > 0) stack[top++] = p - 1;
-    if (x < width - 1) stack[top++] = p + 1;
-    if (y > 0) stack[top++] = p - width;
-    if (y < height - 1) stack[top++] = p + width;
+    if (x > 0) push(p - 1);
+    if (x < width - 1) push(p + 1);
+    if (y > 0) push(p - width);
+    if (y < height - 1) push(p + width);
   }
 
   return cleared;
@@ -132,6 +156,7 @@ export async function saveImageBuffer(buffer, outputPath, options = {}) {
 
   let pipeline = sharp(buffer);
   let cleared = 0;
+  let fillScaledTo = null;
 
   if (remove_background) {
     // Art exported from design tools often already carries alpha; there
@@ -139,6 +164,28 @@ export async function saveImageBuffer(buffer, outputPath, options = {}) {
     if (meta.hasAlpha) {
       pipeline = pipeline.trim({ threshold: 0 });
     } else {
+      // Downscale before the knockout when the source is big enough to threaten
+      // the heap. This has to happen ahead of the fill rather than after it,
+      // because the buffers being bounded are the ones the fill allocates.
+      //
+      // The tradeoff is real but small: resampling softens the backdrop edge, so
+      // `background_tolerance` has a marginally harder job separating subject
+      // from background. That is worth it against an OOM kill, and the cap sits
+      // well above the resolution web output actually ships at.
+      const sourcePixels = (meta.width || 0) * (meta.height || 0);
+      if (sourcePixels > MAX_FILL_PIXELS) {
+        const scale = Math.sqrt(MAX_FILL_PIXELS / sourcePixels);
+        fillScaledTo = {
+          width: Math.round(meta.width * scale),
+          height: Math.round(meta.height * scale),
+        };
+        console.log(
+          `[image] source ${meta.width}×${meta.height} exceeds the ${MAX_FILL_PIXELS.toLocaleString()}px ` +
+            `background-removal cap — filling at ${fillScaledTo.width}×${fillScaledTo.height}`,
+        );
+        pipeline = pipeline.resize(fillScaledTo.width, fillScaledTo.height, { fit: 'inside' });
+      }
+
       const { data, info } = await pipeline
         .ensureAlpha()
         .raw()
@@ -201,6 +248,14 @@ export async function saveImageBuffer(buffer, outputPath, options = {}) {
         ? 'Background: source already had alpha, trimmed to content'
         : `Background: removed, ${cleared.toLocaleString()} px cleared (tolerance ${background_tolerance})`,
     );
+    // Surfaced rather than silent: the cutout edge was computed at a lower
+    // resolution than the source, which is worth knowing if the result looks
+    // softer than expected.
+    if (fillScaledTo) {
+      lines.push(
+        `Note: source downscaled to ${fillScaledTo.width}×${fillScaledTo.height} for background removal (memory cap)`,
+      );
+    }
   }
   return lines.join('\n');
 }
