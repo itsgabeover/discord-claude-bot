@@ -115,6 +115,43 @@ Deliberate choices worth not undoing:
 - `safeResolve()` was verified to still block `../../../etc/passwd` through the
   MCP wrapper.
 
+## What the SDK path unlocks that the Messages API path can't do
+
+None of this is wired up — the migration deliberately kept behaviour identical.
+But these become one-option changes in `agent.js` once the SDK path is proven,
+and none of them were reachable from the hand-rolled loop.
+
+**External MCP servers.** `mcpServers` takes a union of four transports, not
+just the in-process one this repo uses:
+
+| Transport | Config | Use for |
+|---|---|---|
+| `sdk` (in-process) | `createSdkMcpServer(...)` | What `tools/mcp.js` does today |
+| `stdio` | `{command, args, env}` | A local MCP server run as a subprocess |
+| `http` | `{type:'http', url, headers}` | A remote MCP server |
+| `sse` | `{type:'sse', url, headers}` | A remote MCP server over SSE |
+
+So the bot could talk to established MCP servers — GitHub, Linear, Notion,
+Figma, Context7 — alongside its own tools, with `headers` carrying auth. The
+Messages API path had no MCP client at all, so this is genuinely new capability
+rather than a reshuffle.
+
+**Built-in tools.** The SDK ships `Read`, `Write`, `Edit`, `Bash`, `Glob`,
+`Grep`, `WebSearch`, and `WebFetch`. All are disabled here via `tools: []` — see
+Safety posture above for why `Bash` in particular stays off.
+
+**Subagents, skills, plugins.** `agents`, `skills`, and `plugins` options exist
+and are unused.
+
+> ⚠️ **Adding any of these means extending the allowlist.** `allowedTools` lists
+> exactly the bot's 22 tools and `canUseTool` denies everything else, so a newly
+> added MCP server's tools will be *denied at call time* until its
+> `mcp__<server>__*` names are added too. That is the fail-closed behaviour
+> working, not a bug — but it will look like the server silently doesn't work.
+>
+> Also worth thinking through before connecting a third-party MCP: anyone who
+> can `@mention` the bot gets indirect access to whatever that server can do.
+
 ## Enabling and rolling back
 
 ```bash

@@ -26,9 +26,38 @@ const MODEL = process.env.CLAUDE_MODEL || 'claude-sonnet-4-6';
 // several parallel tool calls, so this is a looser bound than the Messages API
 // path enforces. MAX_BUDGET_USD is the tighter, more meaningful cap here.
 const MAX_TURNS = parseInt(process.env.MAX_TOOL_CALLS || '30', 10);
-const MAX_BUDGET_USD = process.env.MAX_BUDGET_USD
-  ? parseFloat(process.env.MAX_BUDGET_USD)
-  : undefined;
+
+/**
+ * Hard cost ceiling for a single reply, in USD.
+ *
+ * $1.00 is chosen to sit just above what a legitimately long turn costs, so it
+ * bounds runaways without cutting real work short. On the default model
+ * (claude-sonnet-4-6, $3/M in and $15/M out, cache reads ~0.1x):
+ *
+ *   - A full 30-tool-call turn — the MAX_TOOL_CALLS ceiling — costs roughly
+ *     $0.72 warm, since the resent prefix is mostly cache reads and the output
+ *     is what actually costs. A $0.50 cap would kill those turns partway.
+ *   - The Messages API path's MAX_TOKENS_PER_TURN=150000 works out to about
+ *     $0.37 on a cache-heavy turn and $1.05 cold and output-heavy, so $1.00 is
+ *     close to the same bound expressed in the unit the SDK actually enforces.
+ *
+ * Worth revisiting if CLAUDE_MODEL changes: the same 30-call turn is about
+ * $1.20 on claude-opus-4-8 ($5/$25), so this cap would bind earlier there.
+ *
+ * Set MAX_BUDGET_USD=0 to disable the cap entirely.
+ */
+const DEFAULT_BUDGET_USD = 1.0;
+const MAX_BUDGET_USD = (() => {
+  const raw = process.env.MAX_BUDGET_USD;
+  if (raw === undefined || raw.trim() === '') return DEFAULT_BUDGET_USD;
+  const parsed = parseFloat(raw);
+  if (Number.isNaN(parsed)) {
+    console.warn(`[agent] MAX_BUDGET_USD="${raw}" is not a number — using $${DEFAULT_BUDGET_USD}.`);
+    return DEFAULT_BUDGET_USD;
+  }
+  // 0 (or negative) means no cap — the SDK option is simply omitted below.
+  return parsed > 0 ? parsed : undefined;
+})();
 
 // Per-channel session IDs, so a channel's conversation continues across
 // messages: Map<channelId, sessionId>
