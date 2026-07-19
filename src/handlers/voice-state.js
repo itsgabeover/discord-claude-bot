@@ -2,6 +2,7 @@ import * as messagesApi from '../claude.js';
 import * as agentSdk from '../agent.js';
 import { getProjectForVoiceChannel } from '../config.js';
 import { startSession, getSession, stopSession } from '../voice/session.js';
+import { turnLimiter } from '../concurrency.js';
 
 /**
  * Joins and leaves voice channels as people come and go.
@@ -17,7 +18,30 @@ import { startSession, getSession, stopSession } from '../voice/session.js';
  */
 
 const USE_AGENT_SDK = /^(1|true|yes)$/i.test(process.env.USE_AGENT_SDK || '');
-const { chat } = USE_AGENT_SDK ? agentSdk : messagesApi;
+// Both backends export the same pair, so voice never learns which one it got.
+const { chat: rawChat, clearHistory } = USE_AGENT_SDK ? agentSdk : messagesApi;
+
+/**
+ * A voice turn costs the same subprocess a text turn does, so it shares the
+ * process-wide cap — otherwise a busy voice channel could sit outside the
+ * limit and reintroduce exactly the concurrency the cap exists to bound.
+ *
+ * Wrapped here, at the single point where chat is injected into the session,
+ * rather than at the two call sites inside voice/session.js — the session
+ * treats chat as an opaque dependency, and keeping it that way means a future
+ * call site is covered automatically.
+ *
+ * No queue notice: there is nowhere to show one mid-conversation, and a spoken
+ * "you're #2 in line" would be worse than the short silence it explains.
+ */
+const chat = async (...args) => {
+  const release = await turnLimiter.acquire();
+  try {
+    return await rawChat(...args);
+  } finally {
+    release();
+  }
+};
 
 /** Humans currently in a channel — the bot itself never counts. */
 function humanCount(channel) {
@@ -44,7 +68,7 @@ export async function handleVoiceStateUpdate(oldState, newState) {
           `"${joined.name}" — starting ${project.id} session.`,
       );
       try {
-        await startSession({ project, voiceChannel: joined, chat });
+        await startSession({ project, voiceChannel: joined, chat, clearHistory });
       } catch (err) {
         console.error(`[voice-state] Could not start session: ${err.message}`);
       }

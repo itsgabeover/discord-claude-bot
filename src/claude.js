@@ -126,6 +126,15 @@ export async function chat(project, channelId, text, images = [], username = 'Us
         url: img.url,
       },
     });
+    // The URL as text as well as an image block. An image block lets Claude
+    // *look* at the attachment; it does not hand over the address. process_image
+    // takes a URL, so without this Claude can describe an attached image in
+    // detail and still have no way to save it into the repo — which reads to
+    // the user as "attachments don't work" when the image plainly arrived.
+    userContent.push({
+      type: 'text',
+      text: `[Attachment URL: ${img.url} — pass this to process_image to save it into the repo.]`,
+    });
   }
 
   userContent.push({

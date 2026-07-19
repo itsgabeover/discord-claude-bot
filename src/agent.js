@@ -64,13 +64,116 @@ const MAX_BUDGET_USD = (() => {
 // messages: Map<channelId, sessionId>
 const sessions = new Map();
 
+// How many channels' transcripts stay resident. Each is a full conversation
+// including tool results (file contents, Drive docs), so this is the dominant
+// term in the bot's steady-state heap.
+const MAX_STORED_SESSIONS = parseInt(process.env.MAX_STORED_SESSIONS || '25', 10);
+
+/**
+ * InMemorySessionStore with an LRU bound.
+ *
+ * The bare store never evicts: every channel the bot has ever answered in keeps
+ * its full transcript for the life of the process, so memory only ever grows.
+ * `sessions.delete(channelId)` in clearHistory() drops the channel→sessionId
+ * mapping but leaves the transcript itself resident, which made !clear look
+ * like it freed memory when it freed nothing.
+ *
+ * This wraps rather than subclasses because eviction needs the SessionKey, and
+ * a key's `projectKey` is derived by the SDK from the resolved `cwd` — it is
+ * not settable through query options, so we cannot reconstruct a key we did not
+ * observe. Recording keys as they pass through append()/load() sidesteps the
+ * derivation entirely: we only ever delete keys the SDK itself handed us.
+ */
+export class BoundedSessionStore {
+  #inner;
+  #max;
+  // sessionId -> Map<keyString, SessionKey>. Insertion order is the LRU order;
+  // re-inserting on touch moves a session to the newest end.
+  #tracked = new Map();
+
+  constructor(inner, max) {
+    this.#inner = inner;
+    this.#max = max;
+  }
+
+  #touch(key) {
+    const { sessionId } = key;
+    const keyStr = `${key.projectKey}\u0000${sessionId}\u0000${key.subpath ?? ''}`;
+    const existing = this.#tracked.get(sessionId);
+    if (existing) {
+      existing.set(keyStr, key);
+      this.#tracked.delete(sessionId); // re-insert at the newest end
+      this.#tracked.set(sessionId, existing);
+    } else {
+      this.#tracked.set(sessionId, new Map([[keyStr, key]]));
+    }
+  }
+
+  async #evictOverflow() {
+    while (this.#tracked.size > this.#max) {
+      // Map iteration order is insertion order, so the first entry is the
+      // least-recently-touched session.
+      const [oldest] = this.#tracked.keys();
+      await this.evictSession(oldest);
+    }
+  }
+
+  /** Drop one session's transcript, including any subagent subpaths. */
+  async evictSession(sessionId) {
+    const keys = this.#tracked.get(sessionId);
+    if (!keys) return;
+    this.#tracked.delete(sessionId);
+    for (const key of keys.values()) {
+      // A store that has already forgotten this key is the desired end state,
+      // so a failed delete must not take down the turn that triggered it.
+      try {
+        await this.#inner.delete(key);
+      } catch (err) {
+        console.warn(`[agent] session evict failed for ${sessionId}: ${err.message}`);
+      }
+    }
+  }
+
+  async append(key, entries) {
+    this.#touch(key);
+    const result = await this.#inner.append(key, entries);
+    await this.#evictOverflow();
+    return result;
+  }
+
+  async load(key) {
+    this.#touch(key);
+    return this.#inner.load(key);
+  }
+
+  async delete(key) {
+    this.#tracked.delete(key.sessionId);
+    return this.#inner.delete(key);
+  }
+
+  listSessions(projectKey) {
+    return this.#inner.listSessions(projectKey);
+  }
+
+  listSessionSummaries(projectKey) {
+    return this.#inner.listSessionSummaries(projectKey);
+  }
+
+  listSubkeys(key) {
+    return this.#inner.listSubkeys(key);
+  }
+}
+
 // Sessions are kept in memory rather than on disk. The SDK's default is to
 // write transcripts to ~/.claude/projects/*.jsonl, which on Render's ephemeral
 // disk both survives nothing across a redeploy and writes for no reason. In
 // memory matches what ./claude.js already does — history is lost on restart —
 // so this is not a behaviour regression. Swap in a Redis/S3 SessionStore here
 // if conversations should ever outlive the process.
-const sessionStore = new InMemorySessionStore();
+const sessionStore = new BoundedSessionStore(
+  new InMemorySessionStore(),
+  MAX_STORED_SESSIONS,
+);
 
 /**
  * The SDK built-in tools the bot is allowed to use.
@@ -150,7 +253,17 @@ function totalTokensFrom(usage = {}) {
 }
 
 export function clearHistory(channelId) {
+  const sessionId = sessions.get(channelId);
   sessions.delete(channelId);
+  // Dropping the mapping alone leaves the transcript resident, so !clear used
+  // to free nothing. Deliberately not awaited: this stays synchronous to match
+  // ./claude.js's clearHistory, and the user-facing confirmation should not
+  // wait on a store cleanup that cannot fail in a way they could act on.
+  if (sessionId) {
+    sessionStore.evictSession(sessionId).catch((err) => {
+      console.warn(`[agent] clearHistory evict failed: ${err.message}`);
+    });
+  }
   return 'Conversation history cleared for this channel.';
 }
 
@@ -183,6 +296,13 @@ async function buildUserContent(text, images, username) {
           media_type: img.contentType || 'image/png',
           data: buffer.toString('base64'),
         },
+      });
+      // See ./claude.js: the image block is what Claude can look at, but
+      // process_image needs the address, and nothing else in the turn carries
+      // it. Without this line an attached image can be described but not saved.
+      content.push({
+        type: 'text',
+        text: `[Attachment URL: ${img.url} — pass this to process_image to save it into the repo.]`,
       });
     } catch (err) {
       // One unreadable attachment shouldn't sink the whole message — tell
