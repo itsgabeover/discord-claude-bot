@@ -452,6 +452,26 @@ export function getToolDefinitions(project) {
   return forProject(project).tools;
 }
 
+/**
+ * A project's tool definitions already paired with their handlers.
+ *
+ * The Messages API path keeps the two apart on purpose — Claude receives the
+ * definitions, and executeTool() routes calls back to the handlers by name. An
+ * SDK MCP tool binds both halves into a single object at construction time, so
+ * ./mcp.js needs them pre-paired. Same PACKS data either way; only the shape
+ * differs.
+ *
+ * @param {object} project - Resolved project config
+ * @returns {Array<{definition: object, handler: Function}>}
+ */
+export function getProjectToolBindings(project) {
+  const { tools, handlers } = forProject(project);
+  return tools.map((definition) => ({
+    definition,
+    handler: handlers[definition.name],
+  }));
+}
+
 /** Names and descriptions of every pack — for docs and debugging. */
 export function listPacks(project) {
   const enabled = project ? forProject(project).packs : ALL_PACKS;

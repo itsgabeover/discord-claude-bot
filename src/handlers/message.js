@@ -1,6 +1,26 @@
-import { chat, clearHistory, getHistoryLength } from '../claude.js';
+import * as messagesApi from '../claude.js';
+import * as agentSdk from '../agent.js';
 import { setVoiceChannel } from '../tools/index.js';
 import { getProjectForGuild, isMultiProject } from '../config.js';
+
+/**
+ * Which Claude backend runs the conversation.
+ *
+ * Both modules export the same chat/clearHistory/getHistoryLength surface, so
+ * everything below is unchanged either way:
+ *
+ *   ../claude.js  — Messages API with a hand-rolled agentic loop (default)
+ *   ../agent.js   — Claude Agent SDK (set USE_AGENT_SDK=1)
+ *
+ * The Messages API path stays the default deliberately. It is what is deployed
+ * and known to work; the SDK path is opt-in until it has been exercised against
+ * a real server, and flipping the variable back is the entire rollback.
+ */
+const USE_AGENT_SDK = /^(1|true|yes)$/i.test(process.env.USE_AGENT_SDK || '');
+const backend = USE_AGENT_SDK ? agentSdk : messagesApi;
+const { chat, clearHistory, getHistoryLength } = backend;
+
+console.log(`[msg] Claude backend: ${USE_AGENT_SDK ? 'Agent SDK' : 'Messages API'}`);
 
 
 const ALLOWED_CHANNEL_IDS = process.env.ALLOWED_CHANNEL_IDS
@@ -34,6 +54,13 @@ const TOOL_LABELS = {
   run_npm: '⚙️ Running npm',
   speak_in_voice: '🔊 Speaking in voice',
   leave_voice: '👋 Leaving voice channel',
+
+  // Agent SDK built-ins (USE_AGENT_SDK=1 only). Capitalised because that's the
+  // name the SDK reports; unlabelled tools fall back to the raw name, which
+  // would surface as a bare "🔧 Grep" mid-conversation.
+  Read: '📖 Reading a file',
+  Grep: '🔍 Searching the code',
+  Glob: '🗂️ Finding files',
 };
 
 // Keep only the most recent steps in the progress message so it doesn't
