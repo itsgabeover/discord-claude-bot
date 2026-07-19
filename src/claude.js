@@ -6,8 +6,56 @@ const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 const MODEL = process.env.CLAUDE_MODEL || 'claude-sonnet-4-6';
 const MAX_HISTORY = parseInt(process.env.MAX_HISTORY || '20', 10);
 
+// Safety caps for a single chat() call's agentic loop — either one stops
+// the loop and falls back to summarizeIncompleteTask() below.
+const MAX_TOOL_CALLS = parseInt(process.env.MAX_TOOL_CALLS || '30', 10);
+const MAX_TOKENS_PER_TURN = parseInt(process.env.MAX_TOKENS_PER_TURN || '150000', 10);
+
 // Per-channel conversation history: Map<channelId, Message[]>
 const histories = new Map();
+
+function usageFooter(totalTokens) {
+  return `\n\n-# ~${totalTokens.toLocaleString()} tokens this turn`;
+}
+
+/**
+ * Called when a chat() turn hits a safety cap (tool calls or token budget)
+ * before Claude reached a final answer. Rather than a canned "try again"
+ * message, ask Claude itself — with the full history of what it already
+ * did — to summarize progress and propose concrete, ready-to-send
+ * follow-up prompts. `tools` is omitted so this call can't chain further
+ * tool use; it's forced to answer in text.
+ */
+async function summarizeIncompleteTask(history, reason, tokensSoFar) {
+  try {
+    history.push({
+      role: 'user',
+      content: [{
+        type: 'text',
+        text: `[SYSTEM NOTE: You've hit this turn's ${reason} and cannot call any more tools right now. Do not attempt to call any tools. Briefly summarize what you completed, what's left, and give the user 2-3 short, ready-to-send follow-up messages that would let you finish the rest across separate turns.]`,
+      }],
+    });
+
+    const response = await client.messages.create({
+      model: MODEL,
+      max_tokens: 1024,
+      system: await getSystemPrompt(),
+      messages: history,
+    });
+
+    history.push({ role: 'assistant', content: response.content });
+
+    const textBlocks = response.content.filter(b => b.type === 'text');
+    const summary = textBlocks.map(b => b.text).join('\n').trim();
+    const total = tokensSoFar + (response.usage?.input_tokens ?? 0) + (response.usage?.output_tokens ?? 0);
+
+    return (summary || `I hit this turn's ${reason} — try breaking your request into smaller steps.`)
+      + usageFooter(total);
+  } catch (err) {
+    console.error('[claude] Failed to summarize incomplete task:', err.message);
+    return `I hit this turn's ${reason} — the task might be too complex for a single message. Try breaking it into smaller steps.`;
+  }
+}
 
 export function clearHistory(channelId) {
   histories.delete(channelId);
@@ -61,9 +109,9 @@ export async function chat(channelId, text, images = [], username = 'User', onTo
 
   // Agentic loop — keep going until Claude gives a final text response
   let toolCallCount = 0;
-  const MAX_TOOL_CALLS = 20; // safety cap
+  let totalTokens = 0;
 
-  while (toolCallCount < MAX_TOOL_CALLS) {
+  while (toolCallCount < MAX_TOOL_CALLS && totalTokens < MAX_TOKENS_PER_TURN) {
     console.log(`[claude] channel=${channelId} sending ${history.length} messages to Claude`);
     const response = await client.messages.create({
       model: MODEL,
@@ -72,6 +120,10 @@ export async function chat(channelId, text, images = [], username = 'User', onTo
       tools: toolDefinitions,
       messages: history,
     });
+
+    const { input_tokens = 0, output_tokens = 0 } = response.usage ?? {};
+    totalTokens += input_tokens + output_tokens;
+    console.log(`[claude] channel=${channelId} usage: +${input_tokens} in / +${output_tokens} out (${totalTokens} total this turn)`);
 
     // Add Claude's response to history
     history.push({ role: 'assistant', content: response.content });
@@ -91,7 +143,8 @@ export async function chat(channelId, text, images = [], username = 'User', onTo
     if (response.stop_reason === 'end_turn') {
       // Extract text blocks from the final response
       const textBlocks = response.content.filter(b => b.type === 'text');
-      return textBlocks.map(b => b.text).join('\n').trim() || '*(no text response)*';
+      const text = textBlocks.map(b => b.text).join('\n').trim() || '*(no text response)*';
+      return text + usageFooter(totalTokens);
     }
 
     if (response.stop_reason === 'tool_use') {
@@ -124,7 +177,11 @@ export async function chat(channelId, text, images = [], username = 'User', onTo
     break;
   }
 
-  return toolCallCount >= MAX_TOOL_CALLS
-    ? 'I hit the tool call limit on that one — the task might be too complex for a single message. Try breaking it into smaller steps.'
-    : '*(unexpected end of response)*';
+  if (toolCallCount >= MAX_TOOL_CALLS) {
+    return summarizeIncompleteTask(history, 'tool call limit', totalTokens);
+  }
+  if (totalTokens >= MAX_TOKENS_PER_TURN) {
+    return summarizeIncompleteTask(history, 'token budget for this turn', totalTokens);
+  }
+  return '*(unexpected end of response)*' + usageFooter(totalTokens);
 }

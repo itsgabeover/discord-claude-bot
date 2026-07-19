@@ -141,6 +141,7 @@ export const toolDefinitions = [
         height: { type: 'number', description: 'Max height in pixels (optional, preserves aspect ratio).' },
         format: { type: 'string', description: 'Output format: webp (default), png, jpg, avif.' },
         quality: { type: 'number', description: 'Quality 1–100 (default 85).' },
+        tint: { type: 'string', description: 'Apply a color tint, as a hex color like "#4A90D9" (optional).' },
       },
       required: ['file_id', 'output_path'],
     },
@@ -189,6 +190,7 @@ export const toolDefinitions = [
         height: { type: 'number', description: 'Max height in pixels (optional, preserves aspect ratio).' },
         format: { type: 'string', description: 'Output format: webp (default), png, jpg, avif.' },
         quality: { type: 'number', description: 'Quality 1–100 (default 85).' },
+        tint: { type: 'string', description: 'Apply a color tint, as a hex color like "#4A90D9" (optional).' },
       },
       required: ['url', 'output_path'],
     },
@@ -268,6 +270,7 @@ export async function executeTool(name, input) {
                                 height: input.height,
                                 format: input.format,
                                 quality: input.quality,
+                                tint: input.tint,
                               });
     case 'list_channels':     return listChannels();
     case 'send_to_channel':   return sendToChannel(input.channel_id, input.message);
@@ -277,6 +280,7 @@ export async function executeTool(name, input) {
                                 height: input.height,
                                 format: input.format,
                                 quality: input.quality,
+                                tint: input.tint,
                               });
     case 'web_search':        return webSearch(input.query, input.count);
     case 'run_npm':           return runNpm(input.command);

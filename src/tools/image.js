@@ -36,10 +36,15 @@ export async function saveImageBuffer(buffer, outputPath, options = {}) {
     height,
     format = 'webp',
     quality = 85,
+    tint,
   } = options;
 
   if (!SUPPORTED_FORMATS.includes(format)) {
     return `Unsupported format "${format}". Use one of: ${SUPPORTED_FORMATS.join(', ')}`;
+  }
+
+  if (tint && !/^#?[0-9a-fA-F]{6}$/.test(tint)) {
+    return `Invalid tint "${tint}". Use a hex color like "#4A90D9".`;
   }
 
   // Get original metadata
@@ -53,6 +58,10 @@ export async function saveImageBuffer(buffer, outputPath, options = {}) {
       fit: 'inside',
       withoutEnlargement: true,
     });
+  }
+
+  if (tint) {
+    pipeline = pipeline.tint(tint.startsWith('#') ? tint : `#${tint}`);
   }
 
   // Convert to the target format
