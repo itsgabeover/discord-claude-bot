@@ -8,6 +8,46 @@ const ALLOWED_CHANNEL_IDS = process.env.ALLOWED_CHANNEL_IDS
 // Discord's max message length
 const DISCORD_MAX_LENGTH = 2000;
 
+// Friendly labels for the live progress log — falls back to the raw tool
+// name for anything not listed here (e.g. if a new tool gets added).
+const TOOL_LABELS = {
+  read_file: '📖 Reading a file',
+  write_file: '✍️ Writing a file',
+  list_directory: '📁 Listing a directory',
+  git_status: '🔍 Checking git status',
+  git_commit: '💾 Committing changes',
+  git_push: '🚀 Pushing to GitHub',
+  git_pull: '⬇️ Pulling latest changes',
+  git_log: '📜 Checking git history',
+  gdrive_list: '🗂️ Listing Google Drive',
+  gdrive_read: '📄 Reading a Drive file',
+  gdrive_create_doc: '📝 Creating a Google Doc',
+  gdrive_append_doc: '✏️ Updating a Google Doc',
+  gdrive_process_image: '🖼️ Downloading an image from Drive',
+  list_channels: '📋 Listing Discord channels',
+  send_to_channel: '📨 Sending a Discord message',
+  inspect_image: '🔎 Inspecting an image',
+  process_image: '🖼️ Processing an image',
+  web_search: '🌐 Searching the web',
+  run_npm: '⚙️ Running npm',
+  speak_in_voice: '🔊 Speaking in voice',
+  leave_voice: '👋 Leaving voice channel',
+};
+
+// Keep only the most recent steps in the progress message so it doesn't
+// grow unbounded on long tool chains.
+const MAX_VISIBLE_STEPS = 8;
+
+function formatProgress(steps, { done = false } = {}) {
+  const visible = steps.slice(-MAX_VISIBLE_STEPS);
+  const header = steps.length > visible.length ? `_(+${steps.length - visible.length} earlier steps)_\n` : '';
+  const lines = visible.map((s, i) => {
+    const isLast = i === visible.length - 1;
+    return isLast && !done ? `${s}…` : `${s} ✓`;
+  });
+  return header + lines.join('\n');
+}
+
 /**
  * Split a long response into chunks that fit Discord's 2000-char limit.
  * Tries to split on newlines so code blocks and paragraphs stay intact.
@@ -109,24 +149,44 @@ export async function handleMessage(message) {
     message.channel.sendTyping().catch(() => {});
   }, 8000);
 
+  // Live progress log — a single message that edits itself as tools run,
+  // so you can see it's actually doing something instead of just "typing...".
+  // Built entirely from data the agentic loop already produces — no extra
+  // Claude API calls or tokens involved.
+  const steps = [];
+  let progressMessagePromise = null;
+
+  const onToolCall = (name) => {
+    steps.push(TOOL_LABELS[name] || `🔧 ${name}`);
+    const body = formatProgress(steps);
+    progressMessagePromise = progressMessagePromise
+      ? progressMessagePromise.then(m => m ? m.edit(body).catch(() => m) : null)
+      : message.reply(body).catch(() => null);
+  };
+
   try {
     const response = await chat(
       message.channelId,
       (text || '(image shared — no text)') + voiceNote,
       images,
       message.author.username,
+      onToolCall,
     );
 
     clearInterval(typingInterval);
 
+    if (progressMessagePromise) {
+      const finalBody = formatProgress(steps, { done: true });
+      await progressMessagePromise.then(m => m?.edit(finalBody).catch(() => {}));
+    }
+
     // Split and send the response
     const chunks = splitMessage(response);
     for (let i = 0; i < chunks.length; i++) {
-      if (i === 0) {
-        // First chunk replies to the original message
+      if (i === 0 && !progressMessagePromise) {
+        // No progress message was shown — reply directly to the original message
         await message.reply(chunks[i]);
       } else {
-        // Subsequent chunks are sent as follow-ups
         await message.channel.send(chunks[i]);
       }
     }

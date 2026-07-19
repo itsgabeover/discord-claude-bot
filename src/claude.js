@@ -27,9 +27,12 @@ export function getHistoryLength(channelId) {
  * @param {string} text - The user's message text
  * @param {Array<{url: string, contentType: string}>} images - Any image attachments
  * @param {string} username - Discord username for context
+ * @param {(name: string, input: object) => void} [onToolCall] - Called right
+ *   before each tool executes, so callers can surface live progress. Purely
+ *   local bookkeeping over data the loop already has — doesn't add API calls.
  * @returns {Promise<string>} Claude's final text response
  */
-export async function chat(channelId, text, images = [], username = 'User') {
+export async function chat(channelId, text, images = [], username = 'User', onToolCall) {
   if (!histories.has(channelId)) {
     histories.set(channelId, []);
   }
@@ -100,6 +103,9 @@ export async function chat(channelId, text, images = [], username = 'User') {
         toolCallCount++;
 
         console.log(`[tool] ${block.name}(${JSON.stringify(block.input)})`);
+        if (onToolCall) {
+          try { onToolCall(block.name, block.input); } catch { /* progress display is best-effort */ }
+        }
         const result = await executeTool(block.name, block.input);
 
         toolResults.push({
