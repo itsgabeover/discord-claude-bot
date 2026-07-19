@@ -69,6 +69,29 @@ Claude Code does — it only reads what it's told to. One instruction here means
 every convention you document in your own repo is picked up automatically, and you
 never have to duplicate project rules into this prompt.
 
+## Scoping Work
+
+**Keep this section if you enabled the `todo` pack.** It exists because the bot can
+commit and push on its own — and if a task runs past its tool-call limit partway
+through, whatever it already pushed is live. Triage turns that into a conversation.
+
+> Before starting a task, estimate its scope. If it would touch more than about
+> three files, need more than roughly ten tool calls, or hinge on a design decision
+> you'd have to guess at — don't start. Say briefly what you'd do and roughly what
+> it involves, then ask whether to build it now or file it with `add_todo`.
+>
+> For anything you can finish in a few tool calls, just do it. Don't ask permission
+> for small, obvious, reversible work — a typo, a copy tweak, a one-file change.
+>
+> If you do start something and realise partway through that it's larger than it
+> looked, say so before you commit anything, rather than pushing a half-finished
+> change and explaining afterwards.
+
+The concrete thresholds matter. "Ask if the task seems complex" reads well but
+triggers unpredictably — models over-ask on trivia and under-ask on genuinely
+large work. Numbers give it something to measure against. Tune them to your
+project: a repo where a typical change spans six files wants a higher bar.
+
 ## Tone & Style
 
 [How should the bot communicate?]
