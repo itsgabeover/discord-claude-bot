@@ -40,6 +40,12 @@ client.once('ready', () => {
     console.log(`   Project "${p.name}" — ${guild}`);
     console.log(`      repo:  ${p.repoPath}`);
     console.log(`      drive: ${p.driveFolderId ? 'configured' : 'not configured'}`);
+    // Printed even when empty: voice presence is opt-in per channel and has no
+    // guild fallback, so "no channels" is the state you most need to see —
+    // silence in a voice channel looks identical to a mapping that never loaded.
+    console.log(`      voice: ${p.voiceChannelIds?.length
+      ? p.voiceChannelIds.join(', ')
+      : 'no channels mapped'}`);
   }
   console.log(`   Webhooks: ${process.env.NOTIFICATIONS_CHANNEL_ID ? 'configured' : 'not configured'}`);
   console.log('   Mention me in Discord to get started!');

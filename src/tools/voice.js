@@ -80,7 +80,11 @@ export async function synthesize(text) {
   const modelId = process.env.ELEVENLABS_MODEL_ID || 'eleven_flash_v2_5';
 
   if (!apiKey || !voiceId) {
-    return 'ElevenLabs is not configured. Set ELEVENLABS_API_KEY and ELEVENLABS_VOICE_ID.';
+    const missing = [!apiKey && 'ELEVENLABS_API_KEY', !voiceId && 'ELEVENLABS_VOICE_ID']
+      .filter(Boolean)
+      .join(' and ');
+    console.error(`[voice] TTS unavailable — ${missing} not set.`);
+    return `ElevenLabs is not configured. Set ${missing}.`;
   }
 
   const spoken = forSpeech(text);
@@ -102,6 +106,12 @@ export async function synthesize(text) {
 
   if (!res.ok) {
     const errText = await res.text().catch(() => 'unknown error');
+    // Logged as well as returned. The return value reaches Claude and the
+    // Discord channel, but a failed request otherwise leaves nothing in the
+    // Render logs except the "Requesting TTS" line above it with no completion
+    // — and a bad key (401), a wrong voice id (404), and an exhausted quota
+    // (429) all look identical from there.
+    console.error(`[voice] ElevenLabs TTS ${res.status}: ${errText.slice(0, 300)}`);
     return `ElevenLabs error (${res.status}): ${errText}`;
   }
 

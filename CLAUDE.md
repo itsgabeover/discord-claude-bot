@@ -132,16 +132,49 @@ prompting the bot mid-deploy if it might commit.
 ## Current state
 
 Working in production: multi-project routing, the text path, all 22 tools,
-prompt caching, per-project GitHub tokens.
+prompt caching, per-project GitHub tokens, and the **Agent SDK backend** —
+`USE_AGENT_SDK=1` is set on Render and the boot log reads `[msg] Claude
+backend: Agent SDK`. Images, session resume, and the `cwd` boundary have still
+not been deliberately exercised; see `AGENT-SDK-MIGRATION.md`.
 
-Built but not yet exercised:
+**Voice conversation works end to end** as of 2026-07-19 — a full round trip is
+in the logs: speech → `[stt]` transcript → model turn → `[voice] Got N bytes of
+audio` → played in the channel.
 
-- **Voice conversation** (`voiceChannelIds` per project). The code is deployed,
-  but no voice channel is mapped yet and **the ElevenLabs balance is at zero**,
-  so transcription and speech both fail. The bot will still join and listen.
-- **Agent SDK backend** (`USE_AGENT_SDK=1`). Never run against a live server.
-  Images, session resume, and the `cwd` boundary are unverified — see
-  `AGENT-SDK-MIGRATION.md`.
+Getting there needed **two independent settings on the ElevenLabs key**, and
+fixing one leaves the other failing in a way that looks like the whole feature
+is broken:
+
+- **A credit quota above zero**, or TTS returns 401 `quota_exceeded`. This is a
+  limit set per *key*, so the account balance can be healthy while the key is
+  capped at 0 — which is exactly what happened, and why an earlier note here
+  recorded "the balance is at zero". The balance was fine; the key's quota
+  wasn't.
+- **The `speech_to_text` permission**, or STT returns 401 `missing_permissions`
+  and the bot hears nothing. Note that ElevenLabs also offers *speech to
+  speech*, which is voice conversion and not a substitute — the pipeline needs
+  text in the middle to feed the model.
+
+Known rough edges, none of them blocking:
+
+- **~10 seconds of dead air** between an utterance ending and the reply
+  playing. Most of it is the fixed ~23k-token prefix (system prompt + 22 tool
+  definitions) on every turn, not accumulated history — a fresh session already
+  costs 23k before anyone speaks. Trimming tool packs for voice is the lever
+  that matters; capping history is worth doing but is the smaller term.
+- **No addressing check.** Any speech in a mapped channel becomes a full model
+  turn and a spoken reply, including conversations not directed at the bot.
+- **Voice history is unbounded within a session.** `MAX_STORED_SESSIONS` bounds
+  how many channels stay resident, but nothing bounds the length of one
+  conversation.
+
+Other notes:
+
+- `projects.json` is read once at startup (`config.js:35`), so
+  editing the secret file on Render does nothing until the service restarts.
+  The startup banner prints a `voice:` line per project — that is the way to
+  confirm a mapping actually loaded, since an unmapped voice channel and a
+  failed config load are indistinguishable from the outside: both are silence.
 
 Known outstanding:
 
