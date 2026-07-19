@@ -31,6 +31,38 @@ async function getClients() {
   }
 }
 
+/**
+ * Find Google Docs in the configured folder whose name contains `needle`.
+ *
+ * Structured counterpart to gdriveList, which formats its results for Claude to
+ * read and so can't be consumed by other code. Restricted to Docs because the
+ * callers append to results via the Docs API, which won't accept a PDF or sheet.
+ *
+ * @param {string} needle - Case-insensitive substring to match against the name
+ * @returns {Promise<Array<{id: string, name: string}>>} Matches, newest first
+ * @throws {Error} If the folder isn't configured or the Drive call fails
+ */
+export async function findDocsByName(needle) {
+  if (!FOLDER_ID) throw new Error('GOOGLE_DRIVE_FOLDER_ID is not set');
+  const { drive } = await getClients();
+
+  const res = await drive.files.list({
+    q: [
+      `'${FOLDER_ID}' in parents`,
+      'trashed = false',
+      "mimeType = 'application/vnd.google-apps.document'",
+    ].join(' and '),
+    fields: 'files(id, name)',
+    orderBy: 'modifiedTime desc',
+    pageSize: 100,
+  });
+
+  // Filter client-side rather than with Drive's `name contains`, whose matching
+  // rules are token-based and would miss a doc named "Project-TODO".
+  const lower = needle.toLowerCase();
+  return (res.data.files || []).filter((f) => f.name.toLowerCase().includes(lower));
+}
+
 export async function gdriveList() {
   try {
     if (!FOLDER_ID) return 'GOOGLE_DRIVE_FOLDER_ID is not set in .env';

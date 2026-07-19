@@ -35,6 +35,8 @@ The bot runs on Render. When you mention it, it calls Claude. Claude can read an
 - **Google Drive** — reads and writes your Docs and Sheets
 - **Web search** — looks things up on the web
 - **npm runner** — installs packages, builds, lints, and type-checks your project
+- **Modular tool packs** — load only the tools your project needs ([details](#tool-packs))
+- **Defers big jobs** — offers to file large tasks for later instead of half-shipping them
 
 ---
 
@@ -238,15 +240,78 @@ That's it. No code changes needed. The bot loads the file on startup and uses it
 
 ---
 
+## Tool packs
+
+Tools are grouped into **packs** so a deployment can load only what its project needs:
+
+| Pack | Tools | Needs |
+|---|---|---|
+| `files` | read, write, list files in the repo | — |
+| `git` | status, commit, push, pull, log | `GITHUB_TOKEN` |
+| `npm` | whitelisted npm commands | a Node/JS project |
+| `web` | web search | `BRAVE_SEARCH_API_KEY` |
+| `media` | resize/convert images, cut out backgrounds | — |
+| `gdrive` | read and write a shared Drive folder | Google credentials |
+| `todo` | file work for later instead of building it | `gdrive` pack |
+| `discord` | send messages to other channels | — |
+| `voice` | speak in a voice channel | `ELEVENLABS_API_KEY` |
+
+By default **every pack loads**. To narrow it, set `ENABLED_TOOL_PACKS` in `.env`:
+
+```bash
+# A Python game project with no Drive and no voice
+ENABLED_TOOL_PACKS=files,git,web
+```
+
+**Why bother?** Not cost — tool definitions live in the cached prompt prefix and bill at a fraction of input price. It's accuracy: a model choosing among 21 tools when 8 are irrelevant to your project picks worse than one choosing among 13. The config above cuts the tool surface by about 64%.
+
+Calling a tool from a disabled pack returns a clear message saying which pack it's in, rather than a generic failure.
+
+---
+
 ## Adding new tools
 
-The bot is easy to extend. There are always exactly three steps:
+Each pack is one self-contained entry in `src/tools/index.js` — definitions and handlers together — so adding tools means editing one object.
 
-1. **Write the function** in `src/tools/` (add to an existing file or create a new one)
-2. **Add a tool definition** to the `toolDefinitions` array in `src/tools/index.js` — this is what Claude reads to know the tool exists and how to use it
-3. **Add a `case`** to the `executeTool` switch in `src/tools/index.js` to route Claude's call to your function
+**To add a tool to an existing pack:**
 
-The description in step 2 is the most important part — write it clearly so Claude knows when and how to use the tool.
+1. **Write the function** in `src/tools/` (an existing file or a new one)
+2. **Add its definition** to that pack's `tools` array, and **its handler** to the pack's `handlers` map
+
+**To add a whole new pack**, add one entry to `PACKS`:
+
+```js
+const PACKS = {
+  // ...
+  myservice: {
+    description: 'One line shown in docs and startup logs.',
+    tools: [
+      {
+        name: 'my_tool',
+        description: 'What it does, and — importantly — when Claude should reach for it.',
+        input_schema: {
+          type: 'object',
+          properties: { thing: { type: 'string', description: 'What this is.' } },
+          required: ['thing'],
+        },
+      },
+    ],
+    handlers: {
+      my_tool: (input) => myFunction(input.thing),
+    },
+  },
+};
+```
+
+Nothing else needs to change — the pack shows up in `ENABLED_TOOL_PACKS`, the startup log, and `listPacks()` automatically.
+
+The **description is the most important part**. Be prescriptive about *when* to call the tool, not just what it does — "Call this when the user asks about current prices" beats "Searches for prices." Recent Claude models reach for tools conservatively, and trigger conditions in the description measurably improve how often the right tool gets picked.
+
+### Deferring work instead of doing it
+
+The `todo` pack gives Claude an `add_todo` tool and pairs with scoping rules in `system-prompt.example.md`. The point is that this bot **commits and pushes on its own** — so a task that runs past its tool-call limit halfway through leaves whatever it already pushed live. Triage turns that into a question instead.
+
+Tasks go to a Google Doc rather than a file in the repo, so capturing an idea doesn't produce a commit (and doesn't burn a deploy on repos that build on push). Create a Doc with "todo" in its name in your Drive folder and the bot finds it — or set `TODO_DOC_ID` to pin an exact one.
 
 ---
 
